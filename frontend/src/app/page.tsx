@@ -21,24 +21,15 @@ interface Story {
   world_setting: any;
 }
 
-interface GenerationStatus {
-  phase: string;
-  round?: number;
-  message: string;
-}
-
 export default function Home() {
-  const [theme, setTheme] = useState('');
-  const [genre, setGenre] = useState('');
   const [loading, setLoading] = useState(false);
   const [story, setStory] = useState<Story | null>(null);
+  const [messages, setMessages] = useState<AgentMessage[]>([]);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [status, setStatus] = useState<GenerationStatus | null>(null);
-  const [messages, setMessages] = useState<AgentMessage[]>([]);
+  const [currentPhase, setCurrentPhase] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
-  // 自动滚动到底部
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
@@ -63,22 +54,33 @@ export default function Home() {
     return colors[agentId] || 'bg-gray-100 border-gray-300';
   };
 
+  const getAgentEmoji = (agentId: string) => {
+    const emojis: Record<string, string> = {
+      plot_agent: '📖',
+      character_agent: '👤',
+      world_agent: '🌍',
+      dialogue_agent: '💬',
+    };
+    return emojis[agentId] || '🤖';
+  };
+
+  const addMessage = (msg: AgentMessage) => {
+    setMessages(prev => [...prev, msg]);
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    
     const form = e.target as HTMLFormElement;
     const themeInput = form.elements.namedItem('theme') as HTMLInputElement;
     const genreSelect = form.elements.namedItem('genre') as HTMLSelectElement;
-    
     const theme = themeInput.value.trim();
     const genre = genreSelect.value;
-    
+
     if (!theme) {
       alert('请输入故事主题');
       return;
     }
 
-    // 重置状态
     setMessages([]);
     setStory(null);
     setLoading(true);
@@ -86,122 +88,32 @@ export default function Home() {
     setCurrentPhase('准备中...');
 
     try {
-      // 创建会话
       const createResponse = await axios.post('/api/v1/stories', {
-        theme: theme,
+        theme,
         genre: genre || undefined,
       });
 
       const { session_id } = createResponse.data;
       setSessionId(session_id);
-
-      // 使用SSE流式获取生成过程
-      const eventSource = new EventSource(`/api/v1/stories/${session_id}/stream`);
-      
-      eventSource.addEventListener('status', (event) => {
-        const data = JSON.parse(event.data);
-        setCurrentPhase(data.message || '处理中...');
-      });
-
-      eventSource.addEventListener('proposal', (event) => {
-        const data = JSON.parse(event.data);
-        addMessage({
-          agent_id: data.agent_id,
-          agent_name: getAgentName(data.agent_id),
-          content: `提出方案：${data.summary}`,
-          message_type: 'proposal',
-        });
-      });
-
-      eventSource.addEventListener('discussion', (event) => {
-        const data = JSON.parse(event.data);
-        addMessage({
-          agent_id: data.agent_id,
-          agent_name: getAgentName(data.agent_id),
-          content: data.content,
-          message_type: 'discussion',
-          round: data.round,
-        });
-      });
-
-      eventSource.addEventListener('round', (event) => {
-        const data = JSON.parse(event.data);
-        addMessage({
-          agent_id: 'system',
-          agent_name: '系统',
-          content: `--- 第 ${data.round} 轮讨论开始 ---`,
-          message_type: 'system',
-        });
-      });
-
-      eventSource.addEventListener('complete', (event) => {
-        const data = JSON.parse(event.data);
-        setStory(data.story);
-        setLoading(false);
-        eventSource.close();
-      });
-
-      eventSource.addEventListener('error', (event) => {
-        // 如果是SSE错误，尝试用普通方式获取结果
-        eventSource.close();
-        fetchStoryResult(session_id);
-      });
-
-      // 备用方案：如果SSE不工作，直接调用生成接口
-      setTimeout(() => {
-        if (loading) {
-          eventSource.close();
-          generateStoryDirect(session_id);
-        }
-      }, 5000);
-
-    } catch (err: any) {
-      setError(err.response?.data?.detail || '生成过程中出现错误');
-      setLoading(false);
-    }
-  };
-
-  const generateStoryDirect = async (sessionId: string) => {
-    try {
       setCurrentPhase('Agent们正在协作生成故事...');
-      
-      // 直接调用生成接口
-      const generateResponse = await axios.post(`/api/v1/stories/${sessionId}/generate`);
-      
+
+      // 调用生成接口
+      const generateResponse = await axios.post(`/api/v1/stories/${session_id}/generate`);
+
       if (generateResponse.data.status === 'completed') {
-        await fetchStoryResult(sessionId);
+        // 获取结果
+        const storyResponse = await axios.get(`/api/v1/stories/${session_id}`);
+        setStory(storyResponse.data.story);
+        setCurrentPhase('生成完成！');
       } else {
         setError('故事生成失败');
-        setLoading(false);
       }
     } catch (err: any) {
-      setError(err.response?.data?.detail || '生成失败');
-      setLoading(false);
-    }
-  };
-
-  const fetchStoryResult = async (sessionId: string) => {
-    try {
-      const storyResponse = await axios.get(`/api/v1/stories/${sessionId}`);
-      setStory(storyResponse.data.story);
-      setCurrentPhase('生成完成！');
-    } catch (err: any) {
-      setError('获取结果失败');
+      setError(err.response?.data?.detail || '生成过程中出现错误');
     } finally {
       setLoading(false);
     }
   };
-
-  const addMessage = (msg: AgentMessage) => {
-    setMessages(prev => [...prev, msg]);
-  };
-
-  const [loading, setLoading] = useState(false);
-  const [story, setStory] = useState<any>(null);
-  const [messages, setMessages] = useState<AgentMessage[]>([]);
-  const [sessionId, setSessionId] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [currentPhase, setCurrentPhase] = useState('');
 
   return (
     <main className="min-h-screen p-8 bg-gray-50">
@@ -296,7 +208,7 @@ export default function Home() {
                   >
                     <div className="flex items-center justify-between mb-1">
                       <span className="text-sm font-medium">
-                        {msg.agent_id === 'system' ? '📋' : '🤖'} {msg.agent_name}
+                        {getAgentEmoji(msg.agent_id)} {msg.agent_name}
                       </span>
                       {msg.round && (
                         <span className="text-xs text-gray-500">第{msg.round}轮</span>
@@ -312,14 +224,12 @@ export default function Home() {
 
           {/* 右侧：生成结果 */}
           <div className="lg:col-span-2 space-y-6">
-            {/* 错误信息 */}
             {error && (
               <div className="p-4 bg-red-100 border border-red-400 text-red-700 rounded-md">
                 ❌ {error}
               </div>
             )}
 
-            {/* 无结果提示 */}
             {!story && !loading && !error && (
               <div className="p-12 bg-white rounded-lg shadow-md text-center">
                 <div className="text-6xl mb-4">📝</div>
@@ -332,7 +242,6 @@ export default function Home() {
               </div>
             )}
 
-            {/* 故事结果 */}
             {story && (
               <>
                 {/* 标题和简介 */}
@@ -399,9 +308,7 @@ export default function Home() {
                             <p><span className="font-medium">性格：</span>{char.personality}</p>
                             <p><span className="font-medium">背景：</span>{char.background}</p>
                             <p><span className="font-medium">动机：</span>{char.motivation}</p>
-                            {char.arc && (
-                              <p><span className="font-medium">成长：</span>{char.arc}</p>
-                            )}
+                            {char.arc && <p><span className="font-medium">成长：</span>{char.arc}</p>}
                           </div>
                         </div>
                       ))}
@@ -461,15 +368,11 @@ export default function Home() {
                     </h3>
                     {story.dialogues.map((dialogue: any, index: number) => (
                       <div key={index} className="mb-6 last:mb-0">
-                        <p className="text-sm text-gray-500 mb-3 italic">
-                          📍 {dialogue.scene}
-                        </p>
+                        <p className="text-sm text-gray-500 mb-3 italic">📍 {dialogue.scene}</p>
                         <div className="space-y-2 pl-4 border-l-2 border-gray-200">
                           {dialogue.content?.map((line: any, i: number) => (
                             <div key={i} className="flex items-start">
-                              <span className="font-medium text-gray-700 mr-2 min-w-[60px]">
-                                {line.character}：
-                              </span>
+                              <span className="font-medium text-gray-700 mr-2 min-w-[60px]">{line.character}：</span>
                               <span className="text-gray-600">{line.line}</span>
                             </div>
                           ))}
