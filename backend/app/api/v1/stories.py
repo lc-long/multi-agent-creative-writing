@@ -4,7 +4,9 @@ Stories API Endpoints
 故事相关的API接口。
 """
 
+import json
 import logging
+import asyncio
 from typing import Optional
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
@@ -56,16 +58,9 @@ class StoryDetailResponse(BaseModel):
 async def create_story(request: StoryCreateRequest):
     """
     创建新故事（触发Agent协作生成）
-    
-    - **theme**: 故事主题（必填）
-    - **genre**: 故事类型（选填）
-    - **constraints**: 其他约束条件（选填）
-    
-    返回会话ID，可用于查询生成进度和结果。
     """
     orchestrator = get_orchestrator()
     
-    # 创建会话
     session = await orchestrator.create_session(
         theme=request.theme,
         genre=request.genre.value if request.genre else None,
@@ -83,10 +78,6 @@ async def create_story(request: StoryCreateRequest):
 async def generate_story(session_id: str):
     """
     开始生成故事
-    
-    - **session_id**: 会话ID
-    
-    异步生成故事，完成后可通过GET /stories/{session_id}获取结果。
     """
     orchestrator = get_orchestrator()
     
@@ -94,7 +85,6 @@ async def generate_story(session_id: str):
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
     
-    # 异步生成（这里简化为同步调用，实际应该使用后台任务）
     try:
         session = await orchestrator.generate_story(session_id)
     except Exception as e:
@@ -112,10 +102,6 @@ async def generate_story(session_id: str):
 async def get_story(session_id: str):
     """
     获取故事生成结果
-    
-    - **session_id**: 会话ID
-    
-    返回故事的完整内容，包括大纲、角色、对话等。
     """
     orchestrator = get_orchestrator()
     
@@ -139,7 +125,7 @@ async def get_story(session_id: str):
         session_id=session.id,
         status=session.status.value,
         story=story_data,
-        discussion=None,  # TODO: 添加讨论记录
+        discussion=None,
     )
 
 
@@ -147,10 +133,6 @@ async def get_story(session_id: str):
 async def stream_story(session_id: str):
     """
     流式获取故事生成过程（SSE）
-    
-    - **session_id**: 会话ID
-    
-    返回Server-Sent Events流，实时展示Agent的生成过程。
     """
     orchestrator = get_orchestrator()
     
@@ -160,12 +142,13 @@ async def stream_story(session_id: str):
     
     async def event_generator():
         """SSE事件生成器"""
-        import json
-        
         async for event in orchestrator.generate_story_stream(session_id):
             event_type = event.get("type", "message")
-            data = json.dumps(event, ensure_ascii=False)
-            yield f"event: {event_type}\ndata: {data}\n\n"
+            data = event.get("data", {})
+            yield f"event: {event_type}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+        
+        # 发送结束标记
+        yield "event: end\ndata: {}\n\n"
     
     return StreamingResponse(
         event_generator(),
@@ -174,5 +157,6 @@ async def stream_story(session_id: str):
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
             "X-Accel-Buffering": "no",
+            "Access-Control-Allow-Origin": "*",
         },
     )

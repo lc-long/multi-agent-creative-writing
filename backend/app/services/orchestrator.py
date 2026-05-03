@@ -6,6 +6,7 @@ Orchestrator Service Module
 
 import logging
 import uuid
+import asyncio
 from typing import Any, AsyncGenerator, Dict, Optional
 from datetime import datetime
 
@@ -35,14 +36,6 @@ class Orchestrator:
     ) -> Session:
         """
         创建新的生成会话
-        
-        Args:
-            theme: 故事主题
-            genre: 故事类型
-            constraints: 约束条件
-            
-        Returns:
-            创建的会话
         """
         session_id = f"sess_{uuid.uuid4().hex[:12]}"
         
@@ -62,35 +55,21 @@ class Orchestrator:
     async def generate_story(self, session_id: str) -> Session:
         """
         生成故事
-        
-        Args:
-            session_id: 会话ID
-            
-        Returns:
-            更新后的会话
         """
         session = self.sessions.get(session_id)
         if not session:
             raise ValueError(f"Session {session_id} not found")
         
-        # 更新状态为处理中
         session.status = SessionStatus.PROCESSING
         session.updated_at = datetime.now()
         
         try:
-            # 构建任务描述
             task = self._build_task_description(session)
-            
-            # 获取讨论引擎
             engine = get_discussion_engine()
-            
-            # 运行讨论
             result = await engine.run_discussion(task)
             
-            # 构建故事对象
             story = self._build_story_from_result(session_id, result)
             
-            # 更新会话
             session.story = story
             session.status = SessionStatus.COMPLETED
             session.completed_at = datetime.now()
@@ -110,67 +89,139 @@ class Orchestrator:
         session_id: str,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """
-        流式生成故事
-        
-        Args:
-            session_id: 会话ID
-            
-        Yields:
-            生成过程中的事件
+        流式生成故事，返回生成过程中的事件
         """
         session = self.sessions.get(session_id)
         if not session:
-            yield {"type": "error", "message": f"Session {session_id} not found"}
+            yield {"type": "error", "data": {"message": f"Session {session_id} not found"}}
             return
         
-        # 更新状态
         session.status = SessionStatus.PROCESSING
-        yield {"type": "status", "status": "processing", "message": "开始生成故事..."}
+        yield {"type": "status", "data": {"message": "开始生成故事..."}}
         
         try:
-            # 构建任务描述
             task = self._build_task_description(session)
-            
-            # 获取讨论引擎
             engine = get_discussion_engine()
             
-            # 定义回调函数
-            async def callback(event_type: str, data: Dict[str, Any]):
-                yield {"type": event_type, **data}
+            # 第一轮：收集提案
+            yield {"type": "status", "data": {"message": "各Agent正在提出初始方案..."}}
             
-            # 运行讨论（这里简化处理，实际应该使用异步生成器）
-            result = await engine.run_discussion(task, callback=None)
+            proposals = await engine._collect_proposals(task)
             
-            # 发送各阶段结果
-            for round_data in result.rounds:
+            for agent_id, proposal in proposals.items():
+                yield {
+                    "type": "proposal",
+                    "data": {
+                        "agent_id": agent_id,
+                        "agent_name": self._get_agent_name(agent_id),
+                        "summary": proposal.summary,
+                        "confidence": proposal.confidence,
+                    }
+                }
+                await asyncio.sleep(0.1)  # 小延迟，让前端能顺序显示
+            
+            # 讨论轮次
+            for round_num in range(2, engine.max_rounds + 1):
                 yield {
                     "type": "round",
-                    "round": round_data.round_number,
-                    "proposals": {
-                        k: {"summary": v.summary, "confidence": v.confidence}
-                        for k, v in round_data.proposals.items()
-                    },
+                    "data": {"round": round_num}
                 }
+                
+                yield {
+                    "type": "status",
+                    "data": {"message": f"第{round_num}轮讨论开始..."}
+                }
+                
+                # 收集反馈
+                feedback = await engine._collect_feedback(proposals, [])
+                
+                for fb in feedback:
+                    yield {
+                        "type": "discussion",
+                        "data": {
+                            "agent_id": fb.agent_id,
+                            "agent_name": self._get_agent_name(fb.agent_id),
+                            "content": fb.feedback,
+                            "round": round_num,
+                            "suggestions": fb.suggestions,
+                        }
+                    }
+                    await asyncio.sleep(0.1)
+                
+                # 修改提案
+                proposals = await engine._revise_proposals(proposals, feedback)
+                
+                for agent_id, proposal in proposals.items():
+                    yield {
+                        "type": "proposal",
+                        "data": {
+                            "agent_id": agent_id,
+                            "agent_name": self._get_agent_name(agent_id),
+                            "summary": proposal.summary,
+                            "confidence": proposal.confidence,
+                            "round": round_num,
+                        }
+                    }
             
-            # 构建故事
+            # 构建最终故事
+            yield {"type": "status", "data": {"message": "正在生成最终故事..."}}
+            
+            from app.agents.base import ConsensusResult
+            consensus = ConsensusResult(
+                reached=True,
+                content={},
+                summary="讨论完成",
+                disagreements=[],
+            )
+            
+            result = type('DiscussionResult', (), {
+                'rounds': [],
+                'final_proposals': proposals,
+                'consensus': consensus,
+                'summary': '讨论完成',
+            })()
+            
             story = self._build_story_from_result(session_id, result)
             
-            # 更新会话
             session.story = story
             session.status = SessionStatus.COMPLETED
             session.completed_at = datetime.now()
             
             yield {
                 "type": "complete",
-                "story": story.dict() if story else None,
-                "message": "故事生成完成！",
+                "data": {
+                    "message": "故事生成完成！",
+                    "story": self._serialize_story(story) if story else None,
+                }
             }
             
         except Exception as e:
             self.logger.error(f"Story generation failed: {e}")
             session.status = SessionStatus.FAILED
             session.error_message = str(e)
-            yield {"type": "error", "message": str(e)}
+            yield {"type": "error", "data": {"message": str(e)}}
+    
+    def _get_agent_name(self, agent_id: str) -> str:
+        """获取Agent名称"""
+        names = {
+            "plot_agent": "剧情Agent",
+            "character_agent": "人物Agent",
+            "world_agent": "世界观Agent",
+            "dialogue_agent": "对话Agent",
+        }
+        return names.get(agent_id, agent_id)
+    
+    def _serialize_story(self, story: Story) -> Dict[str, Any]:
+        """序列化故事对象"""
+        return {
+            "title": story.title,
+            "genre": story.genre,
+            "synopsis": story.synopsis,
+            "outline": story.outline.dict() if story.outline else None,
+            "characters": [c.dict() for c in story.characters],
+            "dialogues": [d.dict() for d in story.dialogues],
+            "world_setting": story.world_setting.dict() if story.world_setting else None,
+        }
     
     def get_session(self, session_id: str) -> Optional[Session]:
         """获取会话"""
@@ -181,7 +232,17 @@ class Orchestrator:
         parts = [f"主题：{session.theme}"]
         
         if session.genre:
-            parts.append(f"类型：{session.genre}")
+            genre_names = {
+                "science_fiction": "科幻",
+                "fantasy": "奇幻",
+                "realism": "现实",
+                "mystery": "悬疑",
+                "romance": "爱情",
+                "horror": "恐怖",
+                "adventure": "冒险",
+                "historical": "历史",
+            }
+            parts.append(f"类型：{genre_names.get(session.genre, session.genre)}")
         
         if session.constraints:
             constraints_str = ", ".join(f"{k}: {v}" for k, v in session.constraints.items())
@@ -194,29 +255,33 @@ class Orchestrator:
         try:
             proposals = result.final_proposals
             
-            # 提取各Agent的输出
             plot_content = proposals.get("plot_agent", {}).content if "plot_agent" in proposals else {}
             character_content = proposals.get("character_agent", {}).content if "character_agent" in proposals else {}
             world_content = proposals.get("world_agent", {}).content if "world_agent" in proposals else {}
             dialogue_content = proposals.get("dialogue_agent", {}).content if "dialogue_agent" in proposals else {}
             
-            # 构建故事对象（简化版本，实际应该更详细）
             from app.models.story import (
                 StoryOutline, Character, WorldSetting, Dialogue
             )
             
-            # 解析大纲
             outline = None
             if plot_content and "title" in plot_content:
+                from app.models.story import ActOutline
+                acts = []
+                for act_data in plot_content.get("acts", []):
+                    acts.append(ActOutline(
+                        name=act_data.get("name", ""),
+                        description=act_data.get("description", ""),
+                        key_events=act_data.get("key_events", []),
+                    ))
                 outline = StoryOutline(
                     title=plot_content.get("title", "未命名"),
                     genre=plot_content.get("genre", "未知"),
                     synopsis=plot_content.get("synopsis", ""),
-                    acts=plot_content.get("acts", []),
+                    acts=acts,
                     themes=plot_content.get("themes", []),
                 )
             
-            # 解析角色
             characters = []
             if "characters" in character_content:
                 for char_data in character_content["characters"]:
@@ -231,7 +296,6 @@ class Orchestrator:
                         relationships=char_data.get("relationships", []),
                     ))
             
-            # 解析世界设定
             world_setting = None
             if "world_setting" in world_content:
                 ws = world_content["world_setting"]
@@ -243,7 +307,6 @@ class Orchestrator:
                     culture=ws.get("culture"),
                 )
             
-            # 解析对话
             dialogues = []
             if "dialogues" in dialogue_content:
                 for dial_data in dialogue_content["dialogues"]:
