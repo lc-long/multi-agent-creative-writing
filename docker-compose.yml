@@ -1,0 +1,65 @@
+# Multi-Agent Creative Writing System - Docker Compose
+# 用于运行数据库等基础设施服务
+
+version: '3.8'
+
+services:
+  # PostgreSQL数据库（生产环境）
+  postgres:
+    image: postgres:15-alpine
+    container_name: writing-postgres
+    environment:
+      POSTGRES_USER: writing_user
+      POSTGRES_PASSWORD: writing_pass
+      POSTGRES_DB: writing_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U writing_user -d writing_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # Redis缓存（可选，用于会话缓存）
+  redis:
+    image: redis:7-alpine
+    container_name: writing-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # pgAdmin（开发环境，可选）
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: writing-pgadmin
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@example.com
+      PGADMIN_DEFAULT_PASSWORD: admin
+    ports:
+      - "5050:80"
+    depends_on:
+      - postgres
+    restart: unless-stopped
+    profiles:
+      - admin
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+
+networks:
+  default:
+    name: writing-network
