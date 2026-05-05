@@ -261,8 +261,29 @@ class Orchestrator:
             dialogue_content = proposals.get("dialogue_agent", {}).content if "dialogue_agent" in proposals else {}
             
             from app.models.story import (
-                StoryOutline, Character, WorldSetting, Dialogue
+                StoryOutline, Character, WorldSetting, Dialogue, Genre
             )
+            
+            # 中文类型到枚举的映射
+            genre_map = {
+                "科幻": Genre.SCIENCE_FICTION,
+                "奇幻": Genre.FANTASY,
+                "现实": Genre.REALISM,
+                "悬疑": Genre.MYSTERY,
+                "爱情": Genre.ROMANCE,
+                "恐怖": Genre.HORROR,
+                "冒险": Genre.ADVENTURE,
+                "历史": Genre.HISTORICAL,
+            }
+            
+            def parse_genre(genre_str: str) -> Genre:
+                """解析类型字符串"""
+                if not genre_str:
+                    return Genre.SCIENCE_FICTION
+                genre_str = str(genre_str)
+                if genre_str in [g.value for g in Genre]:
+                    return Genre(genre_str)
+                return genre_map.get(genre_str, Genre.SCIENCE_FICTION)
             
             outline = None
             if plot_content and "title" in plot_content:
@@ -272,43 +293,69 @@ class Orchestrator:
                     acts.append(ActOutline(
                         name=act_data.get("name", ""),
                         description=act_data.get("description", ""),
-                        key_events=act_data.get("key_events", []),
+                        key_events=act_data.get("key_events", []) or [],
                     ))
+                
+                outline_genre = plot_content.get("genre", "科幻")
                 outline = StoryOutline(
                     title=plot_content.get("title", "未命名"),
-                    genre=plot_content.get("genre", "未知"),
+                    genre=parse_genre(outline_genre),
                     synopsis=plot_content.get("synopsis", ""),
                     acts=acts,
-                    themes=plot_content.get("themes", []),
+                    themes=plot_content.get("themes", []) or [],
                 )
             
             characters = []
-            if "characters" in character_content:
-                for char_data in character_content["characters"]:
-                    characters.append(Character(
-                        name=char_data.get("name", ""),
-                        role=char_data.get("role", "supporting"),
-                        age=char_data.get("age"),
-                        personality=char_data.get("personality", ""),
-                        background=char_data.get("background", ""),
-                        motivation=char_data.get("motivation", ""),
-                        arc=char_data.get("arc"),
-                        relationships=char_data.get("relationships", []),
-                    ))
+            if character_content and "characters" in character_content:
+                chars_data = character_content["characters"]
+                if isinstance(chars_data, list):
+                    for char_data in chars_data:
+                        rels = char_data.get("relationships", []) or []
+                        if isinstance(rels, list) and len(rels) > 0:
+                            if isinstance(rels[0], dict):
+                                from app.models.story import CharacterRelationship
+                                rels = [CharacterRelationship(**r) for r in rels]
+                        age_val = char_data.get("age")
+                        if isinstance(age_val, int):
+                            pass
+                        elif isinstance(age_val, str):
+                            try:
+                                age_val = int(age_val)
+                            except (ValueError, TypeError):
+                                age_val = None
+                        else:
+                            age_val = None
+                        characters.append(Character(
+                            name=char_data.get("name", ""),
+                            role=char_data.get("role", "supporting"),
+                            age=age_val,
+                            personality=char_data.get("personality", ""),
+                            background=char_data.get("background", ""),
+                            motivation=char_data.get("motivation", ""),
+                            arc=char_data.get("arc"),
+                            relationships=rels,
+                        ))
             
+            # 构建世界设定
             world_setting = None
-            if "world_setting" in world_content:
+            if world_content and "world_setting" in world_content:
                 ws = world_content["world_setting"]
                 world_setting = WorldSetting(
-                    era=ws.get("era", ""),
-                    location=ws.get("location", ""),
-                    rules=ws.get("rules", []),
+                    era=ws.get("era", "现代") or "现代",
+                    location=ws.get("location", "未知") or "未知",
+                    rules=ws.get("rules", []) or [],
                     technology_level=ws.get("technology_level"),
                     culture=ws.get("culture"),
                 )
+            else:
+                world_setting = WorldSetting(
+                    era="现代",
+                    location="未知",
+                    rules=[],
+                )
             
             dialogues = []
-            if "dialogues" in dialogue_content:
+            if dialogue_content and "dialogues" in dialogue_content:
                 for dial_data in dialogue_content["dialogues"]:
                     from app.models.story import DialogueLine
                     content = [
@@ -325,7 +372,7 @@ class Orchestrator:
                 id=f"story_{uuid.uuid4().hex[:12]}",
                 session_id=session_id,
                 title=outline.title if outline else "未命名",
-                genre=outline.genre if outline else "未知",
+                genre=outline.genre if outline else Genre.SCIENCE_FICTION,
                 synopsis=outline.synopsis if outline else "",
                 outline=outline,
                 characters=characters,

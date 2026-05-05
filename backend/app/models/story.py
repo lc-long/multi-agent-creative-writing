@@ -100,10 +100,10 @@ class Story(BaseModel):
     title: str = Field(..., description="故事标题")
     genre: Genre = Field(..., description="故事类型")
     synopsis: str = Field(..., description="简介")
-    outline: StoryOutline = Field(..., description="故事大纲")
+    outline: Optional[StoryOutline] = Field(None, description="故事大纲")
     characters: List[Character] = Field(default_factory=list, description="角色列表")
     dialogues: List[Dialogue] = Field(default_factory=list, description="对话列表")
-    world_setting: WorldSetting = Field(..., description="世界观设定")
+    world_setting: Optional[WorldSetting] = Field(None, description="世界观设定")
     created_at: datetime = Field(default_factory=datetime.now, description="创建时间")
 
 
