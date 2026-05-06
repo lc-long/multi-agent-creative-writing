@@ -424,3 +424,60 @@ def get_prompt(agent_id: str, method: str, **kwargs) -> str:
     """获取指定Agent的提示词模板并填充参数"""
     fn = PROMPTS[agent_id][method]
     return fn(**kwargs)
+
+
+def narrate(story_components: Dict[str, Any]) -> str:
+    """根据故事组件生成完整故事正文的提示词"""
+    title = story_components.get("title", "未命名故事")
+    genre = story_components.get("genre", "")
+    synopsis = story_components.get("synopsis", "")
+
+    acts_text = ""
+    for i, act in enumerate(story_components.get("acts", []), 1):
+        acts_text += f"\n第{i}幕：{act.get('name', '')} — {act.get('description', '')}\n"
+        for evt in act.get("key_events", []):
+            acts_text += f"  · {evt}\n"
+
+    chars_text = ""
+    for c in story_components.get("characters", []):
+        chars_text += f"\n- {c.get('name', '未知')}（{c.get('role', '未知')}）：{c.get('personality', '')}；背景：{c.get('background', '')}；动机：{c.get('motivation', '')}\n"
+
+    world = story_components.get("world_setting", {})
+    world_text = ""
+    if world.get("era"):
+        world_text += f"时代：{world['era']}\n"
+    if world.get("location"):
+        world_text += f"地点：{world['location']}\n"
+    if world.get("rules"):
+        world_text += "规则：" + "；".join(world["rules"][:5]) + "\n"
+    if world.get("culture"):
+        world_text += f"文化：{world['culture']}\n"
+
+    dialogues_text = ""
+    for d in story_components.get("dialogues", []):
+        dialogues_text += f"\n场景：{d.get('scene', '')}\n"
+        for line in d.get("content", []):
+            dialogues_text += f"  {line.get('character', '')}：{line.get('line', '')}\n"
+
+    return f"""请根据以下故事要素，创作一个完整的故事正文（不少于2000字）。
+
+【故事标题】{title}
+【类型】{genre}
+【简介】{synopsis}
+
+【故事大纲】{acts_text}
+
+【角色设定】{chars_text}
+
+【世界观】{world_text}
+
+【关键对话场景】{dialogues_text}
+
+要求：
+1. 写一个完整的故事正文，从头到尾，不少于2000字
+2. 按照大纲的幕结构顺序展开叙事
+3. 角色性格要与设定一致，对话要符合角色说话风格
+4. 世界观设定要自然融入故事叙述中
+5. 关键对话场景要包含在故事中，用对话推动情节
+6. 结局要与大纲一致，留有余韵
+7. 直接输出故事正文，不要写概述或元评论"""

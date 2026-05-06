@@ -63,6 +63,7 @@ interface Story {
   title: string;
   genre: string;
   synopsis: string;
+  narrative?: string;
   outline?: {
     acts?: Array<{ name: string; description: string; key_events?: string[] }>;
   };
@@ -1092,6 +1093,19 @@ export default function Home() {
                     </span>
                   </div>
                 </div>
+
+                {story.narrative && (
+                  <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+                    <h3 className="text-xl font-semibold text-gray-800 mb-4 flex items-center gap-2">
+                      <span>📝</span> 完整故事
+                    </h3>
+                    <div className="prose prose-gray max-w-none">
+                      {story.narrative.split('\n').filter((p: string) => p.trim()).map((paragraph: string, i: number) => (
+                        <p key={i} className="text-gray-700 leading-relaxed mb-4">{paragraph}</p>
+                      ))}
+                    </div>
+                  </div>
+                )}
 
                 {story.outline?.acts && story.outline.acts.length > 0 && (
                   <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">

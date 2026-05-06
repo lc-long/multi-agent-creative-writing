@@ -143,6 +143,7 @@ class Orchestrator:
             ("create",       {"agents": list(get_discussion_engine().agents.keys()), "mode": "parallel", "context": "blueprint"}),
             ("review",       {"max_rounds": 2}),
             ("assemble",     {}),
+            ("narrate",      {}),
         ]
 
         try:
@@ -153,7 +154,7 @@ class Orchestrator:
             total = len(pipeline)
 
             for idx, (phase, cfg) in enumerate(pipeline, 1):
-                name = {"brainstorm": "脑暴", "integrate": "整合蓝图", "create": "详细创作", "review": "交叉审阅", "assemble": "最终生成"}.get(phase, phase)
+                name = {"brainstorm": "脑暴", "integrate": "整合蓝图", "create": "详细创作", "review": "交叉审阅", "assemble": "组装故事", "narrate": "撰写完整故事"}.get(phase, phase)
                 await emit("status", {"message": f"Phase {idx}/{total}: {name}..."})
 
                 if phase == "brainstorm":
@@ -183,9 +184,15 @@ class Orchestrator:
                 elif phase == "assemble":
                     story = self._build_story_from_result(session_id, proposals)
                     session.story = story
+
+                elif phase == "narrate":
+                    if session.story:
+                        narrative = await self._phase_narrate(engine, session.story, emit)
+                        session.story.narrative = narrative
+
                     session.status = SessionStatus.COMPLETED
                     session.completed_at = datetime.now()
-                    story_data = self._serialize_story(story) if story else None
+                    story_data = self._serialize_story(session.story) if session.story else None
                     await emit("complete", {"message": "故事生成完成！", "story": story_data})
 
         except Exception as e:
@@ -254,6 +261,66 @@ class Orchestrator:
                         await emit("proposal", {"agent_id": agent_id, "agent_name": self._get_agent_name(agent_id), "summary": revised.summary, "confidence": revised.confidence, "content": revised.content})
                     except Exception as e:
                         self.logger.error(f"Revision failed for {agent_id}: {e}")
+
+                    except Exception as e:
+                        self.logger.error(f"Revision failed for {agent_id}: {e}")
+
+    async def _phase_narrate(self, engine, story, emit) -> str:
+        """调用 LLM 将故事组件合成完整叙事文本"""
+        from app.agents.prompts import narrate
+        from app.agents.base import BaseAgent
+
+        # 构建故事组件 dict
+        components = {
+            "title": story.title,
+            "genre": story.genre,
+            "synopsis": story.synopsis,
+            "acts": [
+                {"name": a.name, "description": a.description, "key_events": a.key_events}
+                for a in (story.outline.acts if story.outline else [])
+            ],
+            "characters": [
+                {"name": c.name, "role": c.role, "personality": c.personality,
+                 "background": c.background, "motivation": c.motivation}
+                for c in story.characters
+            ],
+            "world_setting": {
+                "era": story.world_setting.era if story.world_setting else "",
+                "location": story.world_setting.location if story.world_setting else "",
+                "rules": story.world_setting.rules if story.world_setting else [],
+                "culture": story.world_setting.culture if story.world_setting else "",
+            },
+            "dialogues": [
+                {"scene": d.scene, "content": [{"character": l.character, "line": l.line} for l in d.content]}
+                for d in story.dialogues
+            ],
+        }
+
+        prompt = narrate(components)
+
+        # 用任意一个 agent 的 call_llm
+        agent = next(iter(engine.agents.values()))
+
+        await emit("thinking", {
+            "agent_id": "narrator",
+            "agent_name": "叙事引擎",
+            "content": "正在将所有组件合成为完整故事...",
+        })
+
+        try:
+            response = await agent.call_llm(
+                [{"role": "user", "content": prompt}],
+                max_tokens=8000,
+            )
+            # 清理 think 块
+            import re
+            narrative = re.sub(r'<think>.*?(?:</think>|$)', '', response, flags=re.DOTALL).strip()
+            if not narrative:
+                narrative = response.strip()
+            return narrative
+        except Exception as e:
+            self.logger.error(f"Narrative generation failed: {e}")
+            return ""
 
     def _build_blueprint(self, plot_result, world_result) -> Dict[str, Any]:
         blueprint = {
@@ -331,6 +398,7 @@ class Orchestrator:
             "characters": [c.dict() for c in story.characters],
             "dialogues": [d.dict() for d in story.dialogues],
             "world_setting": story.world_setting.dict() if story.world_setting else None,
+            "narrative": story.narrative,
         }
 
     def get_session(self, session_id: str) -> Optional[Session]:

@@ -104,6 +104,7 @@ class Story(BaseModel):
     characters: List[Character] = Field(default_factory=list, description="角色列表")
     dialogues: List[Dialogue] = Field(default_factory=list, description="对话列表")
     world_setting: Optional[WorldSetting] = Field(None, description="世界观设定")
+    narrative: Optional[str] = Field(None, description="完整故事正文")
     created_at: datetime = Field(default_factory=datetime.now, description="创建时间")
 
 
