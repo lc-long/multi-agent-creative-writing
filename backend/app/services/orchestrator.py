@@ -234,55 +234,72 @@ class Orchestrator:
                 })
 
             # =========================================================
-            # Phase 4: Cross review (one focused round)
+            # Phase 4: Iterative cross review — loop until resolved
             # =========================================================
             await emit("status", {"message": "Phase 4/5: 正在进行交叉审阅..."})
 
-            feedback_list = []
-            for agent_id, agent in engine.agents.items():
-                if agent_id not in proposals:
-                    continue
-                await emit("thinking", {
-                    "agent_id": agent_id,
-                    "agent_name": self._get_agent_name(agent_id),
-                    "content": f"{self._get_agent_name(agent_id)}正在审阅其他Agent的成果...",
-                })
-                try:
-                    feedback = await agent.review(proposals, [])
-                except Exception as e:
-                    self.logger.error(f"Review failed for {agent_id}: {e}")
-                    continue
-                feedback_list.append(feedback)
-                target_name = self._get_agent_name(feedback.target_agent) if feedback.target_agent else "其他Agent"
-                await emit("discussion", {
-                    "agent_id": agent_id,
-                    "agent_name": self._get_agent_name(agent_id),
-                    "content": f"对{target_name}的审阅意见：{feedback.feedback}",
-                    "suggestions": feedback.suggestions,
-                    "target_agent": feedback.target_agent,
-                })
+            max_review_rounds = 2
+            for review_round in range(1, max_review_rounds + 1):
+                if review_round > 1:
+                    await emit("status", {"message": f"审阅第{review_round}轮：仍有未解决的问题..."})
 
-            # Revise based on feedback
-            for agent_id, agent in engine.agents.items():
-                agent_feedback = [f for f in feedback_list if f.target_agent == agent_id]
-                if agent_feedback and agent_id in proposals:
+                feedback_list = []
+                for agent_id, agent in engine.agents.items():
+                    if agent_id not in proposals:
+                        continue
                     await emit("thinking", {
                         "agent_id": agent_id,
                         "agent_name": self._get_agent_name(agent_id),
-                        "content": f"{self._get_agent_name(agent_id)}正在根据审阅意见进行修改...",
+                        "content": f"{self._get_agent_name(agent_id)}正在审阅其他Agent的成果...",
                     })
                     try:
-                        revised = await agent.revise(agent_feedback, proposals[agent_id])
-                        proposals[agent_id] = revised
-                        await emit("proposal", {
+                        feedback = await agent.review(proposals, [])
+                    except Exception as e:
+                        self.logger.error(f"Review failed for {agent_id}: {e}")
+                        continue
+                    feedback_list.append(feedback)
+                    target_name = self._get_agent_name(feedback.target_agent) if feedback.target_agent else "其他Agent"
+                    await emit("discussion", {
+                        "agent_id": agent_id,
+                        "agent_name": self._get_agent_name(agent_id),
+                        "content": f"对{target_name}的审阅意见：{feedback.feedback}",
+                        "suggestions": feedback.suggestions,
+                        "target_agent": feedback.target_agent,
+                    })
+
+                # 检查是否还有 critical / major 问题
+                critical_issues = [
+                    iss for fb in feedback_list
+                    for iss in (fb.issues or [])
+                    if iss.severity in ("critical", "major")
+                ]
+                if not critical_issues:
+                    await emit("status", {"message": "审阅通过，无重大问题"})
+                    break
+
+                await emit("status", {"message": f"发现 {len(critical_issues)} 个需要修改的问题，正在进行修改..."})
+
+                # Revise based on feedback
+                for agent_id, agent in engine.agents.items():
+                    agent_feedback = [f for f in feedback_list if f.target_agent == agent_id]
+                    if agent_feedback and agent_id in proposals:
+                        await emit("thinking", {
                             "agent_id": agent_id,
                             "agent_name": self._get_agent_name(agent_id),
-                            "summary": revised.summary,
-                            "confidence": revised.confidence,
-                            "content": revised.content,
+                            "content": f"{self._get_agent_name(agent_id)}正在根据审阅意见进行修改...",
                         })
-                    except Exception as e:
-                        self.logger.error(f"Revision failed for {agent_id}: {e}")
+                        try:
+                            revised = await agent.revise(agent_feedback, proposals[agent_id])
+                            proposals[agent_id] = revised
+                            await emit("proposal", {
+                                "agent_id": agent_id,
+                                "agent_name": self._get_agent_name(agent_id),
+                                "summary": revised.summary,
+                                "confidence": revised.confidence,
+                                "content": revised.content,
+                            })
+                        except Exception as e:
+                            self.logger.error(f"Revision failed for {agent_id}: {e}")
 
             # =========================================================
             # Phase 5: Final assembly
