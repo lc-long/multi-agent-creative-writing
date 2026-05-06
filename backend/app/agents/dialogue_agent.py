@@ -55,24 +55,55 @@ class DialogueAgent(BaseAgent):
         )
     
     async def propose(self, task: str, context: Optional[Dict[str, Any]] = None) -> AgentProposal:
-        """
-        提出对话设计方案
-        
-        Args:
-            task: 任务描述
-            context: 上下文信息（包含剧情和角色信息）
-            
-        Returns:
-            对话设计提案
-        """
         self.logger.info(f"Proposing dialogue design for task: {task[:50]}...")
-        
-        prompt = f"请为以下故事设计对话：\n\n{task}"
-        
-        if context:
-            prompt += f"\n\n故事结构和角色信息：\n{json.dumps(context, ensure_ascii=False)}"
-        
-        prompt += """
+        import re as _re
+
+        blueprint = (context or {}).get("blueprint")
+
+        if blueprint:
+            chars_desc = "\n".join(
+                f"  - {c['name']}（{c.get('role','?')}）"
+                for c in blueprint.get("characters", [])
+            )
+            prompt = f"""请基于以下统一故事蓝图，设计关键对话场景：
+
+【主题】
+{task}
+
+【故事蓝图】
+标题：{blueprint.get('title','')}
+类型：{blueprint.get('genre','')}
+简介：{blueprint.get('synopsis','')}
+核心冲突：{blueprint.get('core_conflict','')}
+世界观：{blueprint.get('world_summary','')}
+
+【角色列表】
+{chars_desc or '  无'}
+
+请设计2-4个关键对话场景，每个场景要贴合故事的核心冲突和角色关系。
+以JSON格式输出：
+{{
+    "dialogues": [
+        {{
+            "scene": "场景描述（发生在剧情的哪个阶段）",
+            "participants": ["角色1", "角色2"],
+            "content": [
+                {{"character": "角色1", "line": "台词"}},
+                {{"character": "角色2", "line": "台词"}}
+            ]
+        }}
+    ]
+}}
+
+要求：
+- 对话要符合角色性格
+- 通过对话展现角色关系和核心冲突
+- 对话要有张力和感染力"""
+        else:
+            prompt = f"请为以下故事设计对话：\n\n{task}"
+            if context:
+                prompt += f"\n\n故事结构和角色信息：\n{json.dumps(context, ensure_ascii=False)}"
+            prompt += """
 
 请设计2-3个关键对话场景，以JSON格式输出：
 {
@@ -81,27 +112,29 @@ class DialogueAgent(BaseAgent):
             "scene": "场景描述",
             "participants": ["角色1", "角色2"],
             "content": [
-                {"character": "角色1", "line": "台词内容"},
-                {"character": "角色2", "line": "台词内容"}
+                {"character": "角色1", "line": "台词"},
+                {"character": "角色2", "line": "台词"}
             ]
         }
     ]
-}
-
-要求：
-- 对话要符合角色性格
-- 通过对话展现角色关系
-- 对话要有张力和感染力
-- 可以包含潜台词和言外之意"""
+}"""
         
         messages = [{"role": "user", "content": prompt}]
         response = await self.call_llm(messages)
         
+        cleaned = _re.sub(r'<think>.*?</think>', '', response, flags=_re.DOTALL).strip()
         try:
-            content = self._extract_json(response)
+            content = self._extract_json(cleaned)
         except Exception as e:
             self.logger.warning(f"Failed to parse JSON: {e}")
-            content = {"raw_response": response}
+            brace = _re.search(r'\{[\s\S]*\}', cleaned)
+            if brace:
+                try:
+                    content = json.loads(brace.group(0))
+                except Exception:
+                    content = {"raw_response": response}
+            else:
+                content = {"raw_response": response}
         
         dialogues = content.get("dialogues", [])
         summary = f"对话设计方案：{len(dialogues)}个场景"
@@ -232,13 +265,14 @@ class DialogueAgent(BaseAgent):
     
     def _extract_json(self, text: str) -> Dict[str, Any]:
         """从文本中提取JSON"""
+        import re
+        text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL)
         try:
             return json.loads(text)
         except json.JSONDecodeError:
             pass
         
-        import re
-        json_match = re.search(r'```json\s*(.*?)\s*```', text, re.DOTALL)
+        json_match = re.search(r'```(?:json)?\s*(.*?)\s*```', text, re.DOTALL)
         if json_match:
             try:
                 return json.loads(json_match.group(1))
@@ -253,7 +287,6 @@ class DialogueAgent(BaseAgent):
                 pass
         
         raise ValueError("无法从响应中提取JSON")
-
 
 # 创建全局实例
 dialogue_agent = DialogueAgent()

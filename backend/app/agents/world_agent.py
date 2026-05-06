@@ -54,51 +54,78 @@ class WorldBuildingAgent(BaseAgent):
         )
     
     async def propose(self, task: str, context: Optional[Dict[str, Any]] = None) -> AgentProposal:
-        """
-        提出世界观设定方案
-        
-        Args:
-            task: 任务描述
-            context: 上下文信息
-            
-        Returns:
-            世界观设定提案
-        """
         self.logger.info(f"Proposing world setting for task: {task[:50]}...")
-        
-        prompt = f"请为以下故事设计世界观：\n\n{task}"
-        
-        if context:
-            prompt += f"\n\n故事结构和角色：\n{json.dumps(context, ensure_ascii=False)}"
-        
-        prompt += """
+        import re as _re
+
+        blueprint = (context or {}).get("blueprint")
+
+        if blueprint:
+            prompt = f"""请基于以下统一故事蓝图，完善世界观设定：
+
+【主题】
+{task}
+
+【故事蓝图】
+标题：{blueprint.get('title','')}
+类型：{blueprint.get('genre','')}
+简介：{blueprint.get('synopsis','')}
+核心冲突：{blueprint.get('core_conflict','')}
+主要角色：{[c['name'] for c in blueprint.get('characters',[])]}
+世界观概要：{blueprint.get('world_summary','')}
+
+请根据蓝图完善世界观设定，以JSON格式输出：
+{{
+    "world_setting": {{
+        "era": "时代背景",
+        "location": "主要地点设定",
+        "rules": ["世界规则1", "世界规则2"],
+        "technology_level": "科技水平描述",
+        "culture": "文化背景描述",
+        "history": "重要历史事件",
+        "factions": ["势力1", "势力2"]
+    }}
+}}"""
+        else:
+            prompt = f"请为以下故事设计世界观：\n\n{task}"
+            if context:
+                prompt += f"\n\n故事结构和角色：\n{json.dumps(context, ensure_ascii=False)}"
+            prompt += """
 
 请设计完整的世界观，以JSON格式输出：
 {
     "world_setting": {
-        "era": "时代背景（如：近未来2050年、中世纪、远古时代）",
+        "era": "时代背景",
         "location": "主要地点设定",
-        "rules": ["世界规则1", "世界规则2", "世界规则3"],
+        "rules": ["世界规则1", "世界规则2"],
         "technology_level": "科技水平描述",
         "culture": "文化背景描述",
         "history": "重要历史事件",
         "factions": ["势力1", "势力2"]
     }
-}
-
-要求：
-- 世界设定要服务于故事主题
-- 规则要自洽，没有矛盾
-- 要考虑设定对角色行为的影响"""
+}"""
         
         messages = [{"role": "user", "content": prompt}]
         response = await self.call_llm(messages)
         
-        try:
-            content = self._extract_json(response)
-        except Exception as e:
-            self.logger.warning(f"Failed to parse JSON: {e}")
-            content = {"raw_response": response}
+        cleaned = _re.sub(r'<think>.*?</think>', '', response, flags=_re.DOTALL)
+        # 最激进的方式：直接取第一个 { 到最后一个 }
+        content = None
+        brace = _re.search(r'\{[\s\S]*\}', cleaned)
+        if brace:
+            for attempt in [cleaned, brace.group(0)]:
+                try:
+                    content = self._extract_json(attempt)
+                    if content: break
+                except Exception:
+                    continue
+        if content is None:
+            # 终极 fallback: 直接尝试 parse 整个 cleaned 文本
+            try:
+                content = json.loads(cleaned)
+            except Exception:
+                self.logger.warning(f"JSON extraction failed, using raw_response")
+                self.logger.warning(f"Response length: {len(response)}, cleaned: {cleaned[:200]}")
+                content = {"raw_response": response}
         
         world = content.get("world_setting", {})
         era = world.get("era", "未知时代")
@@ -231,13 +258,14 @@ class WorldBuildingAgent(BaseAgent):
     
     def _extract_json(self, text: str) -> Dict[str, Any]:
         """从文本中提取JSON"""
+        import re
+        text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL)
         try:
             return json.loads(text)
         except json.JSONDecodeError:
             pass
         
-        import re
-        json_match = re.search(r'```json\s*(.*?)\s*```', text, re.DOTALL)
+        json_match = re.search(r'```(?:json)?\s*(.*?)\s*```', text, re.DOTALL)
         if json_match:
             try:
                 return json.loads(json_match.group(1))
@@ -252,7 +280,6 @@ class WorldBuildingAgent(BaseAgent):
                 pass
         
         raise ValueError("无法从响应中提取JSON")
-
 
 # 创建全局实例
 world_agent = WorldBuildingAgent()

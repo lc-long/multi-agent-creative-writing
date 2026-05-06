@@ -55,30 +55,36 @@ class CharacterAgent(BaseAgent):
         )
     
     async def propose(self, task: str, context: Optional[Dict[str, Any]] = None) -> AgentProposal:
-        """
-        提出角色设计方案
-        
-        Args:
-            task: 任务描述
-            context: 上下文信息（可能包含剧情Agent的故事结构）
-            
-        Returns:
-            角色设计提案
-        """
         self.logger.info(f"Proposing character design for task: {task[:50]}...")
-        
-        # 构建提示词
-        prompt = f"请为以下故事设计角色：\n\n{task}"
-        
-        if context:
-            prompt += f"\n\n故事结构：\n{json.dumps(context, ensure_ascii=False)}"
-        
-        prompt += """
+        import re as _re
 
-请设计3-5个主要角色，以JSON格式输出：
-{
+        blueprint = (context or {}).get("blueprint")
+
+        if blueprint and blueprint.get("characters"):
+            chars_list = "\n".join(
+                f"  - {c['name']}（{c.get('role','?')}）: {c.get('description','')}"
+                for c in blueprint["characters"]
+            )
+            prompt = f"""请基于以下统一故事蓝图，进行详细的角色设计：
+
+【主题】
+{task}
+
+【故事蓝图】
+标题：{blueprint.get('title','')}
+类型：{blueprint.get('genre','')}
+简介：{blueprint.get('synopsis','')}
+核心冲突：{blueprint.get('core_conflict','')}
+世界观：{blueprint.get('world_summary','')}
+
+【故事中已出现的角色】
+{chars_list}
+
+请根据蓝图中的角色列表，为每个角色进行完整的详细设计。可以适当增减角色。
+以JSON格式输出：
+{{
     "characters": [
-        {
+        {{
             "name": "角色名",
             "role": "protagonist/antagonist/supporting",
             "age": 25,
@@ -87,26 +93,54 @@ class CharacterAgent(BaseAgent):
             "motivation": "核心动机",
             "arc": "成长弧线描述",
             "relationships": [
+                {{"character_name": "其他角色名", "relation": "关系描述"}}
+            ]
+        }}
+    ]
+}}"""
+        else:
+            prompt = f"请为以下故事设计角色：\n\n{task}"
+            if context:
+                prompt += f"\n\n故事结构：\n{json.dumps(context, ensure_ascii=False)}"
+            prompt += """
+
+请设计3-5个主要角色，以JSON格式输出：
+{
+    "characters": [
+        {
+            "name": "角色名",
+            "role": "protagonist/antagonist/supporting",
+            "age": 25,
+            "personality": "性格描述",
+            "background": "背景故事",
+            "motivation": "核心动机",
+            "arc": "成长弧线描述",
+            "relationships": [
                 {"character_name": "其他角色名", "relation": "关系描述"}
             ]
         }
     ]
-}
-
-要求：
-- 主角要有清晰的成长弧线
-- 反派要有合理的动机
-- 角色之间要有复杂的关系
-- 性格要多面，避免脸谱化"""
+}"""
         
         messages = [{"role": "user", "content": prompt}]
         response = await self.call_llm(messages)
         
-        try:
-            content = self._extract_json(response)
-        except Exception as e:
-            self.logger.warning(f"Failed to parse JSON: {e}")
-            content = {"raw_response": response}
+        cleaned = _re.sub(r'<think>.*?</think>', '', response, flags=_re.DOTALL)
+        content = None
+        brace = _re.search(r'\{[\s\S]*\}', cleaned)
+        if brace:
+            for attempt in [cleaned, brace.group(0)]:
+                try:
+                    content = self._extract_json(attempt)
+                    if content: break
+                except Exception:
+                    continue
+        if content is None:
+            try:
+                content = json.loads(cleaned)
+            except Exception:
+                self.logger.warning(f"Character JSON extraction failed, using raw_response")
+                content = {"raw_response": response}
         
         characters = content.get("characters", [])
         summary = f"角色设计方案：{len(characters)}个角色"
@@ -240,13 +274,14 @@ class CharacterAgent(BaseAgent):
     
     def _extract_json(self, text: str) -> Dict[str, Any]:
         """从文本中提取JSON"""
+        import re
+        text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL)
         try:
             return json.loads(text)
         except json.JSONDecodeError:
             pass
         
-        import re
-        json_match = re.search(r'```json\s*(.*?)\s*```', text, re.DOTALL)
+        json_match = re.search(r'```(?:json)?\s*(.*?)\s*```', text, re.DOTALL)
         if json_match:
             try:
                 return json.loads(json_match.group(1))
@@ -261,7 +296,6 @@ class CharacterAgent(BaseAgent):
                 pass
         
         raise ValueError("无法从响应中提取JSON")
-
 
 # 创建全局实例
 character_agent = CharacterAgent()

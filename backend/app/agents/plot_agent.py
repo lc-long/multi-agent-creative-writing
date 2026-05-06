@@ -54,66 +54,88 @@ class PlotAgent(BaseAgent):
         )
     
     async def propose(self, task: str, context: Optional[Dict[str, Any]] = None) -> AgentProposal:
-        """
-        提出故事结构方案
-        
-        Args:
-            task: 任务描述（主题和约束）
-            context: 上下文信息
-            
-        Returns:
-            故事结构提案
-        """
         self.logger.info(f"Proposing story structure for task: {task[:50]}...")
         
-        # 构建提示词
-        prompt = f"请为以下主题设计一个故事结构：\n\n{task}"
-        if context:
-            prompt += f"\n\n额外约束：{json.dumps(context, ensure_ascii=False)}"
+        import re as _re
         
-        prompt += """
+        blueprint = (context or {}).get("blueprint")
+        
+        if blueprint:
+            # Phase 3: 基于蓝图进行详细创作
+            chars_desc = "\n".join(
+                f"  - {c['name']}（{c.get('role','?')}）: {c.get('description','')}"
+                for c in blueprint.get("characters", [])
+            )
+            prompt = f"""请基于以下统一故事蓝图，进行详细的故事结构创作：
+
+【主题】
+{task}
+
+【故事蓝图】
+标题：{blueprint.get('title','')}
+类型：{blueprint.get('genre','')}
+简介：{blueprint.get('synopsis','')}
+核心冲突：{blueprint.get('core_conflict','')}
+主要角色：
+{chars_desc or '  待设计'}
+世界观概要：{blueprint.get('world_summary','')}
+
+请以JSON格式输出完整的故事结构，包含以下字段：
+{{
+    "title": "故事标题",
+    "genre": "故事类型",
+    "synopsis": "一句话简介（200字以内）",
+    "core_conflict": "核心冲突描述",
+    "acts": [
+        {{"name": "开篇", "description": "故事起始", "key_events": ["事件1", "事件2"]}},
+        {{"name": "发展", "description": "冲突升级", "key_events": ["事件1", "事件2"]}},
+        {{"name": "高潮", "description": "高潮对决", "key_events": ["事件1", "事件2"]}},
+        {{"name": "结局", "description": "收尾", "key_events": ["事件1", "事件2"]}}
+    ],
+    "themes": ["主题1", "主题2"]
+}}"""
+        else:
+            # Phase 1: 脑暴模式——输出故事框架+角色需求
+            prompt = f"请为以下主题设计一个故事结构：\n\n{task}"
+            if context:
+                prompt += f"\n\n额外约束：{json.dumps(context, ensure_ascii=False)}"
+            prompt += """
 
 请以JSON格式输出故事结构，包含以下字段：
 {
     "title": "故事标题",
     "genre": "故事类型",
     "synopsis": "一句话简介",
+    "core_conflict": "核心冲突描述",
+    "characters": [
+        {"name": "角色名", "role": "主角/反派/配角", "description": "角色简要描述"}
+    ],
     "acts": [
-        {
-            "name": "开篇",
-            "description": "故事起始，引入主角和世界",
-            "key_events": ["事件1", "事件2"]
-        },
-        {
-            "name": "发展",
-            "description": "冲突升级，主角面临挑战",
-            "key_events": ["事件1", "事件2"]
-        },
-        {
-            "name": "高潮",
-            "description": "故事高潮，主角做出关键选择",
-            "key_events": ["事件1", "事件2"]
-        },
-        {
-            "name": "结局",
-            "description": "故事收尾，冲突解决",
-            "key_events": ["事件1", "事件2"]
-        }
+        {"name": "开篇", "description": "故事起始", "key_events": ["事件1", "事件2"]},
+        {"name": "发展", "description": "冲突升级", "key_events": ["事件1", "事件2"]},
+        {"name": "高潮", "description": "高潮对决", "key_events": ["事件1", "事件2"]},
+        {"name": "结局", "description": "收尾", "key_events": ["事件1", "事件2"]}
     ],
     "themes": ["主题1", "主题2"]
 }"""
         
-        # 调用LLM
         messages = [{"role": "user", "content": prompt}]
         response = await self.call_llm(messages)
         
-        # 解析响应
+        cleaned = _re.sub(r'<think>.*?</think>', '', response, flags=_re.DOTALL).strip()
+        
         try:
-            # 尝试提取JSON
-            content = self._extract_json(response)
+            content = self._extract_json(cleaned)
         except Exception as e:
             self.logger.warning(f"Failed to parse JSON, using raw response: {e}")
-            content = {"raw_response": response}
+            brace = _re.search(r'\{[\s\S]*\}', cleaned)
+            if brace:
+                try:
+                    content = json.loads(brace.group(0))
+                except Exception:
+                    content = {"raw_response": response}
+            else:
+                content = {"raw_response": response}
         
         return AgentProposal(
             agent_id=self.agent_id,
@@ -238,15 +260,18 @@ class PlotAgent(BaseAgent):
     
     def _extract_json(self, text: str) -> Dict[str, Any]:
         """从文本中提取JSON"""
+        import re
+        # 去除 <think>...</think> 块
+        text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL)
+        
         # 尝试直接解析
         try:
             return json.loads(text)
         except json.JSONDecodeError:
             pass
         
-        # 尝试提取```json ... ```格式
-        import re
-        json_match = re.search(r'```json\s*(.*?)\s*```', text, re.DOTALL)
+        # 尝试提取```(json) ... ```格式
+        json_match = re.search(r'```(?:json)?\s*(.*?)\s*```', text, re.DOTALL)
         if json_match:
             try:
                 return json.loads(json_match.group(1))
@@ -262,7 +287,6 @@ class PlotAgent(BaseAgent):
                 pass
         
         raise ValueError("无法从响应中提取JSON")
-
 
 # 创建全局实例
 plot_agent = PlotAgent()

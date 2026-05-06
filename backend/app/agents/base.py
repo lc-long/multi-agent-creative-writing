@@ -4,6 +4,7 @@ Base Agent Module
 所有Agent的基类，提供通用的LLM调用和消息处理功能。
 """
 
+import json
 import logging
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional
@@ -82,17 +83,6 @@ class BaseAgent(ABC):
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
     ) -> str:
-        """
-        调用LLM
-        
-        Args:
-            messages: 消息列表
-            temperature: 温度参数
-            max_tokens: 最大Token数
-            
-        Returns:
-            LLM响应内容
-        """
         from openai import AsyncOpenAI
         
         client = AsyncOpenAI(
@@ -100,7 +90,6 @@ class BaseAgent(ABC):
             base_url=settings.OPENAI_API_BASE,
         )
         
-        # 构建完整的消息列表（包含system prompt）
         full_messages = [
             {"role": "system", "content": self.system_prompt},
             *messages,
@@ -121,6 +110,38 @@ class BaseAgent(ABC):
         except Exception as e:
             self.logger.error(f"LLM call failed: {e}")
             raise
+
+    def _extract_json(self, text: str) -> Dict[str, Any]:
+        """从LLM响应中提取JSON，自动去除<think>块和markdown代码块包裹"""
+        import re
+        raw = text
+
+        # 去除 <think>...</think> 块
+        raw = re.sub(r'<think>.*?</think>', '', raw, flags=re.DOTALL)
+
+        # 尝试直接解析
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError:
+            pass
+
+        # 尝试从 ```json ... ``` 中提取
+        match = re.search(r'```(?:json)?\s*([\s\S]*?)```', raw, re.DOTALL)
+        if match:
+            try:
+                return json.loads(match.group(1).strip())
+            except json.JSONDecodeError:
+                pass
+
+        # 尝试从 { ... } 中提取
+        match = re.search(r'\{[\s\S]*\}', raw)
+        if match:
+            try:
+                return json.loads(match.group(0))
+            except json.JSONDecodeError:
+                pass
+
+        raise ValueError(f"无法从响应中提取JSON: {text[:200]}...")
     
     @abstractmethod
     async def propose(self, task: str, context: Optional[Dict[str, Any]] = None) -> AgentProposal:
