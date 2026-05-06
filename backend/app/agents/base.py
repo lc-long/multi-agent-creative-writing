@@ -29,15 +29,26 @@ class AgentProposal(BaseModel):
     content: Dict[str, Any] = Field(..., description="提案内容")
     summary: str = Field(..., description="提案摘要")
     confidence: float = Field(default=0.8, description="置信度")
+    resolved_issues: list[str] = Field(default_factory=list, description="本轮已修复的问题")
+    unresolved_issues: list[str] = Field(default_factory=list, description="尚未修复的问题")
+
+
+class ReviewIssue(BaseModel):
+    """结构化审阅条目"""
+    target_agent: str = Field(default="", description="目标Agent ID")
+    severity: str = Field(default="minor", description="严重程度: critical/major/minor")
+    description: str = Field(default="", description="问题描述")
+    suggestion: str = Field(default="", description="改进建议")
 
 
 class AgentFeedback(BaseModel):
     """Agent反馈"""
-    agent_id: str = Field(..., description="Agent ID")
-    target_agent: str = Field(..., description="目标Agent")
-    feedback: str = Field(..., description="反馈内容")
+    agent_id: str = Field(..., description="反馈者Agent ID")
+    target_agent: str = Field(default="", description="目标Agent")
+    feedback: str = Field(default="", description="反馈内容")
     suggestions: List[str] = Field(default_factory=list, description="建议")
     agreement: bool = Field(default=True, description="是否同意")
+    issues: list[ReviewIssue] = Field(default_factory=list, description="结构化问题列表")
 
 
 class ConsensusResult(BaseModel):

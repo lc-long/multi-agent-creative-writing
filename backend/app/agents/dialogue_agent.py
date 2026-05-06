@@ -121,21 +121,28 @@ class DialogueAgent(BaseAgent):
         
         messages = [{"role": "user", "content": prompt}]
         response = await self.call_llm(messages)
-        
-        cleaned = _re.sub(r'<think>.*?</think>', '', response, flags=_re.DOTALL).strip()
-        try:
-            content = self._extract_json(cleaned)
-        except Exception as e:
-            self.logger.warning(f"Failed to parse JSON: {e}")
-            brace = _re.search(r'\{[\s\S]*\}', cleaned)
-            if brace:
-                try:
-                    content = json.loads(brace.group(0))
-                except Exception:
-                    content = {"raw_response": response}
-            else:
-                content = {"raw_response": response}
-        
+
+        from app.agents.schemas import DialogueOutput
+
+        cleaned = _re.sub(r'<think>.*?</think>', '', response, flags=_re.DOTALL)
+        content = None
+
+        for attempt in [cleaned, _re.search(r'\{[\s\S]*\}', cleaned).group(0) if _re.search(r'\{[\s\S]*\}', cleaned) else None]:
+            if not attempt:
+                continue
+            try:
+                raw = self._extract_json(attempt)
+                validated = DialogueOutput(**raw)
+                content = validated.model_dump()
+                break
+            except Exception:
+                continue
+
+        if content is None:
+            self.logger.warning("Dialogue JSON extraction failed, using schema defaults")
+            content = DialogueOutput().model_dump()
+            content["_parse_error"] = "LLM output could not be parsed"
+
         dialogues = content.get("dialogues", [])
         summary = f"对话设计方案：{len(dialogues)}个场景"
         
@@ -192,15 +199,25 @@ class DialogueAgent(BaseAgent):
         messages = [{"role": "user", "content": prompt}]
         response = await self.call_llm(messages)
         
+        import re as _re
+        cleaned = _re.sub(r'<think>.*?</think>', '', response, flags=_re.DOTALL)
         try:
-            content = self._extract_json(response)
-            feedback = content.get("feedback", response)
-            suggestions = content.get("suggestions", [])
-            agreement = content.get("agreement", True)
+            content = self._extract_json(cleaned)
         except Exception:
-            feedback = response
-            suggestions = []
-            agreement = True
+            content = {}
+        
+        from app.agents.base import ReviewIssue
+        
+        feedback = content.get("feedback", response)
+        suggestions = content.get("suggestions", [])
+        agreement = content.get("agreement", True)
+        
+        issues = []
+        for iss in content.get("issues", []):
+            try:
+                issues.append(ReviewIssue(**iss))
+            except Exception:
+                pass
         
         target_agent = [k for k in proposals.keys() if k != self.agent_id][0] if proposals else "unknown"
         
@@ -210,6 +227,7 @@ class DialogueAgent(BaseAgent):
             feedback=feedback,
             suggestions=suggestions,
             agreement=agreement,
+            issues=issues,
         )
     
     async def revise(

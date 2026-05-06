@@ -121,22 +121,29 @@ class PlotAgent(BaseAgent):
         
         messages = [{"role": "user", "content": prompt}]
         response = await self.call_llm(messages)
-        
-        cleaned = _re.sub(r'<think>.*?</think>', '', response, flags=_re.DOTALL).strip()
-        
-        try:
-            content = self._extract_json(cleaned)
-        except Exception as e:
-            self.logger.warning(f"Failed to parse JSON, using raw response: {e}")
-            brace = _re.search(r'\{[\s\S]*\}', cleaned)
-            if brace:
-                try:
-                    content = json.loads(brace.group(0))
-                except Exception:
-                    content = {"raw_response": response}
-            else:
-                content = {"raw_response": response}
-        
+
+        from app.agents.schemas import PlotOutput
+
+        cleaned = _re.sub(r'<think>.*?</think>', '', response, flags=_re.DOTALL)
+        content = None
+
+        # 尝试解析 JSON → 用 schema 校验 → 失败就走默认值
+        for attempt in [cleaned, _re.search(r'\{[\s\S]*\}', cleaned).group(0) if _re.search(r'\{[\s\S]*\}', cleaned) else None]:
+            if not attempt:
+                continue
+            try:
+                raw = self._extract_json(attempt)
+                validated = PlotOutput(**raw)
+                content = validated.model_dump()
+                break
+            except Exception:
+                continue
+
+        if content is None:
+            self.logger.warning("Plot JSON extraction failed, using schema defaults")
+            content = PlotOutput().model_dump()
+            content["_parse_error"] = "LLM output could not be parsed"
+
         return AgentProposal(
             agent_id=self.agent_id,
             content=content,
@@ -149,19 +156,8 @@ class PlotAgent(BaseAgent):
         proposals: Dict[str, AgentProposal],
         discussion: List[AgentMessage],
     ) -> AgentFeedback:
-        """
-        Review其他Agent的方案
-        
-        Args:
-            proposals: 所有Agent的提案
-            discussion: 讨论记录
-            
-        Returns:
-            反馈意见
-        """
         self.logger.info("Reviewing other agents' proposals...")
         
-        # 构建review提示词
         prompt = "请从剧情角度review以下方案：\n\n"
         
         for agent_id, proposal in proposals.items():
@@ -172,37 +168,55 @@ class PlotAgent(BaseAgent):
         
         if discussion:
             prompt += "## 讨论记录\n"
-            for msg in discussion[-3:]:  # 只看最近3条
+            for msg in discussion[-3:]:
                 prompt += f"- {msg.agent_id}: {msg.content}\n"
         
         prompt += """
-请从剧情角度给出反馈：
-1. 这些方案对故事结构有什么影响？
-2. 有哪些需要调整的地方？
-3. 有什么建议？
-
-请以JSON格式输出：
+请从剧情角度给出结构化反馈，以JSON格式输出：
 {
-    "feedback": "反馈内容",
+    "feedback": "总体反馈内容",
     "suggestions": ["建议1", "建议2"],
-    "agreement": true/false
+    "agreement": true,
+    "issues": [
+        {
+            "target_agent": "存在问题的Agent ID",
+            "severity": "critical/major/minor",
+            "description": "问题描述",
+            "suggestion": "改进建议"
+        }
+    ]
 }"""
         
         messages = [{"role": "user", "content": prompt}]
         response = await self.call_llm(messages)
         
+        import re as _re
+        cleaned = _re.sub(r'<think>.*?</think>', '', response, flags=_re.DOTALL)
         try:
-            content = self._extract_json(response)
-            feedback = content.get("feedback", response)
-            suggestions = content.get("suggestions", [])
-            agreement = content.get("agreement", True)
+            content = self._extract_json(cleaned)
         except Exception:
-            feedback = response
-            suggestions = []
-            agreement = True
+            content = {}
         
-        # 找到主要review的对象
+        from app.agents.base import ReviewIssue
+        
+        feedback = content.get("feedback", response)
+        suggestions = content.get("suggestions", [])
+        agreement = content.get("agreement", True)
+        
+        issues = []
+        for iss in content.get("issues", []):
+            try:
+                issues.append(ReviewIssue(**iss))
+            except Exception:
+                pass
+        
         target_agent = [k for k in proposals.keys() if k != self.agent_id][0] if proposals else "unknown"
+        if not issues and target_agent:
+            issues.append(ReviewIssue(
+                target_agent=target_agent,
+                severity="major",
+                description=feedback[:100],
+            ))
         
         return AgentFeedback(
             agent_id=self.agent_id,

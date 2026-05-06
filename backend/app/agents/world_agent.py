@@ -106,27 +106,28 @@ class WorldBuildingAgent(BaseAgent):
         
         messages = [{"role": "user", "content": prompt}]
         response = await self.call_llm(messages)
-        
+
+        from app.agents.schemas import WorldOutput
+
         cleaned = _re.sub(r'<think>.*?</think>', '', response, flags=_re.DOTALL)
-        # 最激进的方式：直接取第一个 { 到最后一个 }
         content = None
-        brace = _re.search(r'\{[\s\S]*\}', cleaned)
-        if brace:
-            for attempt in [cleaned, brace.group(0)]:
-                try:
-                    content = self._extract_json(attempt)
-                    if content: break
-                except Exception:
-                    continue
-        if content is None:
-            # 终极 fallback: 直接尝试 parse 整个 cleaned 文本
+
+        for attempt in [cleaned, _re.search(r'\{[\s\S]*\}', cleaned).group(0) if _re.search(r'\{[\s\S]*\}', cleaned) else None]:
+            if not attempt:
+                continue
             try:
-                content = json.loads(cleaned)
+                raw = self._extract_json(attempt)
+                validated = WorldOutput(**raw)
+                content = validated.model_dump()
+                break
             except Exception:
-                self.logger.warning(f"JSON extraction failed, using raw_response")
-                self.logger.warning(f"Response length: {len(response)}, cleaned: {cleaned[:200]}")
-                content = {"raw_response": response}
-        
+                continue
+
+        if content is None:
+            self.logger.warning("World JSON extraction failed, using schema defaults")
+            content = WorldOutput().model_dump()
+            content["_parse_error"] = "LLM output could not be parsed"
+
         world = content.get("world_setting", {})
         era = world.get("era", "未知时代")
         location = world.get("location", "未知地点")
@@ -184,15 +185,25 @@ class WorldBuildingAgent(BaseAgent):
         messages = [{"role": "user", "content": prompt}]
         response = await self.call_llm(messages)
         
+        import re as _re
+        cleaned = _re.sub(r'<think>.*?</think>', '', response, flags=_re.DOTALL)
         try:
-            content = self._extract_json(response)
-            feedback = content.get("feedback", response)
-            suggestions = content.get("suggestions", [])
-            agreement = content.get("agreement", True)
+            content = self._extract_json(cleaned)
         except Exception:
-            feedback = response
-            suggestions = []
-            agreement = True
+            content = {}
+        
+        from app.agents.base import ReviewIssue
+        
+        feedback = content.get("feedback", response)
+        suggestions = content.get("suggestions", [])
+        agreement = content.get("agreement", True)
+        
+        issues = []
+        for iss in content.get("issues", []):
+            try:
+                issues.append(ReviewIssue(**iss))
+            except Exception:
+                pass
         
         target_agent = [k for k in proposals.keys() if k != self.agent_id][0] if proposals else "unknown"
         
@@ -202,6 +213,7 @@ class WorldBuildingAgent(BaseAgent):
             feedback=feedback,
             suggestions=suggestions,
             agreement=agreement,
+            issues=issues,
         )
     
     async def revise(
