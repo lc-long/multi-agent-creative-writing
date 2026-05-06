@@ -70,7 +70,7 @@ class PlotAgent(BaseAgent):
 
         from app.agents.schemas import PlotOutput
 
-        cleaned = _re.sub(r'<think>.*?</think>', '', response, flags=_re.DOTALL)
+        cleaned = _re.sub(r'<think>.*?(?:</think>|$)', '', response, flags=_re.DOTALL)
         content = None
 
         # 尝试解析 JSON → 用 schema 校验 → 失败就走默认值
@@ -122,7 +122,7 @@ class PlotAgent(BaseAgent):
         response = await self.call_llm(messages)
         
         import re as _re
-        cleaned = _re.sub(r'<think>.*?</think>', '', response, flags=_re.DOTALL)
+        cleaned = _re.sub(r'<think>.*?(?:</think>|$)', '', response, flags=_re.DOTALL)
         try:
             content = self._extract_json(cleaned)
         except Exception:
@@ -203,7 +203,7 @@ class PlotAgent(BaseAgent):
         """从文本中提取JSON"""
         import re
         # 去除 <think>...</think> 块
-        text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL)
+        text = re.sub(r'<think>.*?(?:</think>|$)', '', text, flags=re.DOTALL)
         
         # 尝试直接解析
         try:

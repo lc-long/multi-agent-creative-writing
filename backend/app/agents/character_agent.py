@@ -127,7 +127,7 @@ class CharacterAgent(BaseAgent):
 
         from app.agents.schemas import CharacterListOutput
 
-        cleaned = _re.sub(r'<think>.*?</think>', '', response, flags=_re.DOTALL)
+        cleaned = _re.sub(r'<think>.*?(?:</think>|$)', '', response, flags=_re.DOTALL)
         content = None
 
         for attempt in [cleaned, _re.search(r'\{[\s\S]*\}', cleaned).group(0) if _re.search(r'\{[\s\S]*\}', cleaned) else None]:
@@ -207,7 +207,7 @@ class CharacterAgent(BaseAgent):
         response = await self.call_llm(messages)
         
         import re as _re
-        cleaned = _re.sub(r'<think>.*?</think>', '', response, flags=_re.DOTALL)
+        cleaned = _re.sub(r'<think>.*?(?:</think>|$)', '', response, flags=_re.DOTALL)
         try:
             content = self._extract_json(cleaned)
         except Exception:
@@ -282,7 +282,7 @@ class CharacterAgent(BaseAgent):
     def _extract_json(self, text: str) -> Dict[str, Any]:
         """从文本中提取JSON"""
         import re
-        text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL)
+        text = re.sub(r'<think>.*?(?:</think>|$)', '', text, flags=re.DOTALL)
         try:
             return json.loads(text)
         except json.JSONDecodeError:
