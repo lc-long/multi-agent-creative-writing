@@ -136,197 +136,56 @@ class Orchestrator:
             await queue.put(event)
             await self._save_sessions()
 
+        pipeline = [
+            ("brainstorm",   {"agents": ["plot_agent", "world_agent"], "mode": "parallel"}),
+            ("integrate",    {}),
+            ("create",       {"agents": list(get_discussion_engine().agents.keys()), "mode": "parallel", "context": "blueprint"}),
+            ("review",       {"max_rounds": 2}),
+            ("assemble",     {}),
+        ]
+
         try:
             task = self._build_task_description(session)
             engine = get_discussion_engine()
+            proposals: Dict[str, Any] = {}
+            blueprint: Dict[str, Any] = {}
+            total = len(pipeline)
 
-            # =========================================================
-            # Phase 1: Brainstorm — plot + world in parallel
-            # =========================================================
-            await emit("status", {"message": "Phase 1/5: 各Agent正在脑暴初始方案..."})
+            for idx, (phase, cfg) in enumerate(pipeline, 1):
+                name = {"brainstorm": "脑暴", "integrate": "整合蓝图", "create": "详细创作", "review": "交叉审阅", "assemble": "最终生成"}.get(phase, phase)
+                await emit("status", {"message": f"Phase {idx}/{total}: {name}..."})
 
-            plot_agent = engine.agents["plot_agent"]
-            world_agent = engine.agents["world_agent"]
+                if phase == "brainstorm":
+                    await self._phase_run_agents(engine, cfg["agents"], task, None, proposals, emit, cfg["mode"])
 
-            plot_task = asyncio.create_task(plot_agent.propose(task, None))
-            world_task = asyncio.create_task(world_agent.propose(task, None))
-
-            await emit("thinking", {"agent_id": "plot_agent", "agent_name": "剧情Agent", "content": "剧情Agent正在构思故事框架和角色需求..."})
-            await emit("thinking", {"agent_id": "world_agent", "agent_name": "世界观Agent", "content": "世界观Agent正在构思世界观草案..."})
-
-            plot_result, world_result = await asyncio.gather(plot_task, world_task)
-
-            proposals = {}
-
-            if plot_result:
-                proposals["plot_agent"] = plot_result
-                await emit("proposal", {
-                    "agent_id": "plot_agent",
-                    "agent_name": "剧情Agent",
-                    "summary": plot_result.summary,
-                    "confidence": plot_result.confidence,
-                    "content": plot_result.content,
-                })
-
-            if world_result:
-                proposals["world_agent"] = world_result
-                await emit("proposal", {
-                    "agent_id": "world_agent",
-                    "agent_name": "世界观Agent",
-                    "summary": world_result.summary,
-                    "confidence": world_result.confidence,
-                    "content": world_result.content,
-                })
-
-            # =========================================================
-            # Phase 2: Integration — build unified blueprint
-            # =========================================================
-            await emit("status", {"message": "Phase 2/5: 正在整合为统一故事蓝图..."})
-
-            blueprint = self._build_blueprint(plot_result, world_result)
-            await emit("blueprint", {
-                "title": blueprint.get("title", ""),
-                "genre": blueprint.get("genre", ""),
-                "synopsis": blueprint.get("synopsis", ""),
-                "core_conflict": blueprint.get("core_conflict", ""),
-                "characters": blueprint.get("characters", []),
-                "world_summary": blueprint.get("world_summary", ""),
-            })
-
-            # =========================================================
-            # Phase 3: Detailed creation — all 4 agents in parallel
-            # =========================================================
-            await emit("status", {"message": "Phase 3/5: 各Agent正在基于蓝图进行详细创作..."})
-
-            plot_context = {"phase": "creation", "blueprint": blueprint}
-            char_context = {"phase": "creation", "blueprint": blueprint}
-            world_context = {"phase": "creation", "blueprint": blueprint}
-            dial_context = {"phase": "creation", "blueprint": blueprint}
-
-            tasks = {
-                "plot_agent": asyncio.create_task(plot_agent.propose(task, plot_context)),
-                "character_agent": asyncio.create_task(engine.agents["character_agent"].propose(task, char_context)),
-                "world_agent": asyncio.create_task(world_agent.propose(task, world_context)),
-                "dialogue_agent": asyncio.create_task(engine.agents["dialogue_agent"].propose(task, dial_context)),
-            }
-
-            for aid, t in tasks.items():
-                await emit("thinking", {
-                    "agent_id": aid,
-                    "agent_name": self._get_agent_name(aid),
-                    "content": f"{self._get_agent_name(aid)}正在根据蓝图进行详细创作...",
-                })
-
-            detailed_results = await asyncio.gather(*tasks.values(), return_exceptions=True)
-
-            for aid, result in zip(tasks.keys(), detailed_results):
-                if isinstance(result, Exception):
-                    self.logger.error(f"Detailed creation failed for {aid}: {result}")
-                    await emit("error", {"message": f"{self._get_agent_name(aid)}详细创作失败: {str(result)}"})
-                    continue
-                proposals[aid] = result
-                await emit("proposal", {
-                    "agent_id": aid,
-                    "agent_name": self._get_agent_name(aid),
-                    "summary": result.summary,
-                    "confidence": result.confidence,
-                    "content": result.content,
-                })
-
-            # =========================================================
-            # Phase 4: Iterative cross review — loop until resolved
-            # =========================================================
-            await emit("status", {"message": "Phase 4/5: 正在进行交叉审阅..."})
-
-            max_review_rounds = 2
-            for review_round in range(1, max_review_rounds + 1):
-                if review_round > 1:
-                    await emit("status", {"message": f"审阅第{review_round}轮：仍有未解决的问题..."})
-
-                feedback_list = []
-                for agent_id, agent in engine.agents.items():
-                    if agent_id not in proposals:
-                        continue
-                    await emit("thinking", {
-                        "agent_id": agent_id,
-                        "agent_name": self._get_agent_name(agent_id),
-                        "content": f"{self._get_agent_name(agent_id)}正在审阅其他Agent的成果...",
-                    })
-                    try:
-                        feedback = await agent.review(proposals, [])
-                    except Exception as e:
-                        self.logger.error(f"Review failed for {agent_id}: {e}")
-                        continue
-                    feedback_list.append(feedback)
-                    target_name = self._get_agent_name(feedback.target_agent) if feedback.target_agent else "其他Agent"
-                    await emit("discussion", {
-                        "agent_id": agent_id,
-                        "agent_name": self._get_agent_name(agent_id),
-                        "content": f"对{target_name}的审阅意见：{feedback.feedback}",
-                        "suggestions": feedback.suggestions,
-                        "target_agent": feedback.target_agent,
+                elif phase == "integrate":
+                    blueprint = self._build_blueprint(
+                        proposals.get("plot_agent"),
+                        proposals.get("world_agent"),
+                    )
+                    await emit("blueprint", {
+                        "title": blueprint.get("title", ""),
+                        "genre": blueprint.get("genre", ""),
+                        "synopsis": blueprint.get("synopsis", ""),
+                        "core_conflict": blueprint.get("core_conflict", ""),
+                        "characters": blueprint.get("characters", []),
+                        "world_summary": blueprint.get("world_summary", ""),
                     })
 
-                # 检查是否还有 critical / major 问题
-                critical_issues = [
-                    iss for fb in feedback_list
-                    for iss in (fb.issues or [])
-                    if iss.severity in ("critical", "major")
-                ]
-                if not critical_issues:
-                    await emit("status", {"message": "审阅通过，无重大问题"})
-                    break
+                elif phase == "create":
+                    ctx = {"phase": "creation", "blueprint": blueprint}
+                    await self._phase_run_agents(engine, cfg["agents"], task, ctx, proposals, emit, cfg["mode"])
 
-                await emit("status", {"message": f"发现 {len(critical_issues)} 个需要修改的问题，正在进行修改..."})
+                elif phase == "review":
+                    await self._phase_review(engine, proposals, emit, cfg.get("max_rounds", 2))
 
-                # Revise based on feedback
-                for agent_id, agent in engine.agents.items():
-                    agent_feedback = [f for f in feedback_list if f.target_agent == agent_id]
-                    if agent_feedback and agent_id in proposals:
-                        await emit("thinking", {
-                            "agent_id": agent_id,
-                            "agent_name": self._get_agent_name(agent_id),
-                            "content": f"{self._get_agent_name(agent_id)}正在根据审阅意见进行修改...",
-                        })
-                        try:
-                            revised = await agent.revise(agent_feedback, proposals[agent_id])
-                            proposals[agent_id] = revised
-                            await emit("proposal", {
-                                "agent_id": agent_id,
-                                "agent_name": self._get_agent_name(agent_id),
-                                "summary": revised.summary,
-                                "confidence": revised.confidence,
-                                "content": revised.content,
-                            })
-                        except Exception as e:
-                            self.logger.error(f"Revision failed for {agent_id}: {e}")
-
-            # =========================================================
-            # Phase 5: Final assembly
-            # =========================================================
-            await emit("status", {"message": "Phase 5/5: 正在生成最终故事..."})
-
-            from app.agents.base import ConsensusResult
-            consensus = ConsensusResult(
-                reached=True, content={}, summary="讨论完成", disagreements=[]
-            )
-            result = type('DiscussionResult', (), {
-                'rounds': [],
-                'final_proposals': proposals,
-                'consensus': consensus,
-                'summary': '创作完成',
-            })()
-            story = self._build_story_from_result(session_id, result)
-
-            session.story = story
-            session.status = SessionStatus.COMPLETED
-            session.completed_at = datetime.now()
-
-            story_data = self._serialize_story(story) if story else None
-            await emit("complete", {
-                "message": "故事生成完成！",
-                "story": story_data,
-            })
+                elif phase == "assemble":
+                    story = self._build_story_from_result(session_id, proposals)
+                    session.story = story
+                    session.status = SessionStatus.COMPLETED
+                    session.completed_at = datetime.now()
+                    story_data = self._serialize_story(story) if story else None
+                    await emit("complete", {"message": "故事生成完成！", "story": story_data})
 
         except Exception as e:
             self.logger.error(f"Story generation failed: {e}")
@@ -335,6 +194,65 @@ class Orchestrator:
             await emit("error", {"message": str(e)})
 
         await queue.put(None)
+
+    async def _phase_run_agents(
+        self, engine, agent_ids: list, task: str, context: dict | None,
+        proposals: dict, emit, mode: str = "parallel",
+    ) -> None:
+        agents_to_run = [(aid, engine.agents[aid]) for aid in agent_ids if aid in engine.agents]
+
+        if mode == "parallel":
+            async def run_one(aid, agent):
+                await emit("thinking", {"agent_id": aid, "agent_name": self._get_agent_name(aid), "content": f"{self._get_agent_name(aid)}正在创作..."})
+                try:
+                    result = await agent.propose(task, context)
+                    if result:
+                        proposals[aid] = result
+                        await emit("proposal", {"agent_id": aid, "agent_name": self._get_agent_name(aid), "summary": result.summary, "confidence": result.confidence, "content": result.content})
+                except Exception as e:
+                    self.logger.error(f"Agent {aid} failed: {e}")
+
+            tasks = [asyncio.create_task(run_one(aid, agent)) for aid, agent in agents_to_run]
+            await asyncio.gather(*tasks)
+        else:
+            for aid, agent in agents_to_run:
+                await run_one(aid, agent)
+
+    async def _phase_review(self, engine, proposals: dict, emit, max_rounds: int = 2) -> None:
+        for review_round in range(1, max_rounds + 1):
+            if review_round > 1:
+                await emit("status", {"message": f"审阅第{review_round}轮：仍有未解决的问题..."})
+
+            feedback_list = []
+            for agent_id, agent in engine.agents.items():
+                if agent_id not in proposals:
+                    continue
+                await emit("thinking", {"agent_id": agent_id, "agent_name": self._get_agent_name(agent_id), "content": f"{self._get_agent_name(agent_id)}正在审阅其他Agent的成果..."})
+                try:
+                    feedback = await agent.review(proposals, [])
+                except Exception as e:
+                    self.logger.error(f"Review failed for {agent_id}: {e}")
+                    continue
+                feedback_list.append(feedback)
+                target_name = self._get_agent_name(feedback.target_agent) if feedback.target_agent else "其他Agent"
+                await emit("discussion", {"agent_id": agent_id, "agent_name": self._get_agent_name(agent_id), "content": f"对{target_name}的审阅意见：{feedback.feedback}", "suggestions": feedback.suggestions, "target_agent": feedback.target_agent})
+
+            critical = [iss for fb in feedback_list for iss in (fb.issues or []) if iss.severity in ("critical", "major")]
+            if not critical:
+                await emit("status", {"message": "审阅通过，无重大问题"})
+                return
+
+            await emit("status", {"message": f"发现 {len(critical)} 个需要修改的问题，正在进行修改..."})
+            for agent_id, agent in engine.agents.items():
+                agent_feedback = [f for f in feedback_list if f.target_agent == agent_id]
+                if agent_feedback and agent_id in proposals:
+                    await emit("thinking", {"agent_id": agent_id, "agent_name": self._get_agent_name(agent_id), "content": f"{self._get_agent_name(agent_id)}正在根据审阅意见进行修改..."})
+                    try:
+                        revised = await agent.revise(agent_feedback, proposals[agent_id])
+                        proposals[agent_id] = revised
+                        await emit("proposal", {"agent_id": agent_id, "agent_name": self._get_agent_name(agent_id), "summary": revised.summary, "confidence": revised.confidence, "content": revised.content})
+                    except Exception as e:
+                        self.logger.error(f"Revision failed for {agent_id}: {e}")
 
     def _build_blueprint(self, plot_result, world_result) -> Dict[str, Any]:
         blueprint = {
@@ -425,10 +343,8 @@ class Orchestrator:
             parts.append(f"约束：{constraints_str}")
         return "\n".join(parts)
 
-    def _build_story_from_result(self, session_id: str, result: Any) -> Optional[Story]:
+    def _build_story_from_result(self, session_id: str, proposals: Dict[str, Any]) -> Optional[Story]:
         try:
-            proposals = result.final_proposals
-
             plot_content = (
                 proposals.get("plot_agent", {}).content
                 if "plot_agent" in proposals
