@@ -116,6 +116,7 @@ class Session(BaseModel):
     constraints: Optional[Dict[str, Any]] = Field(None, description="约束条件")
     story: Optional[Story] = Field(None, description="生成的故事")
     error_message: Optional[str] = Field(None, description="错误信息")
+    progress_messages: List[Dict[str, Any]] = Field(default_factory=list, description="进度消息列表")
     created_at: datetime = Field(default_factory=datetime.now, description="创建时间")
     updated_at: datetime = Field(default_factory=datetime.now, description="更新时间")
     completed_at: Optional[datetime] = Field(None, description="完成时间")
