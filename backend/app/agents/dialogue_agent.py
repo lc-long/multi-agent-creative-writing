@@ -57,7 +57,7 @@ class DialogueAgent(BaseAgent):
     async def propose(self, task: str, context: Optional[Dict[str, Any]] = None) -> AgentProposal:
         self.logger.info(f"Proposing dialogue design for task: {task[:50]}...")
         from app.agents.prompts import get_prompt
-import re as _re
+        import re as _re
 
         blueprint = (context or {}).get("blueprint")
 
@@ -201,7 +201,7 @@ import re as _re
         response = await self.call_llm(messages)
         
         from app.agents.prompts import get_prompt
-import re as _re
+        import re as _re
         cleaned = _re.sub(r'<think>.*?</think>', '', response, flags=_re.DOTALL)
         try:
             content = self._extract_json(cleaned)

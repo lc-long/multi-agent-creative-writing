@@ -44,7 +44,8 @@ class Orchestrator:
                 raw = json.load(f)
             for sid, sdata in raw.items():
                 self.sessions[sid] = Session(**sdata)
-            self.logger.info(f"Loaded {len(raw)} persisted sessions")
+                self._event_queues[sid] = asyncio.Queue()
+            self.logger.info(f"Loaded {len(raw)} persisted sessions with queues")
         except (FileNotFoundError, json.JSONDecodeError):
             self.logger.info("No persisted sessions to load")
 
@@ -271,20 +272,33 @@ class Orchestrator:
             blueprint["synopsis"] = pc.get("synopsis", "")
             blueprint["core_conflict"] = pc.get("core_conflict", "")
 
-            # Extract character names from acts
-            seen = set()
-            for act in pc.get("acts", []):
-                for evt in act.get("key_events", []):
-                    # Find quoted names like 「张三」 or "张三"
-                    names = re.findall(r'[「""]([^「」""]{1,8})[」""]', str(evt))
-                    for n in names:
-                        if n not in seen:
-                            seen.add(n)
-                            blueprint["characters"].append({
-                                "name": n,
-                                "role": "未知",
-                                "description": "",
-                            })
+            # Use plot_agent's structured character list if available
+            plot_chars = pc.get("characters", [])
+            if plot_chars:
+                for c in plot_chars:
+                    if isinstance(c, dict) and c.get("name"):
+                        blueprint["characters"].append({
+                            "name": c["name"],
+                            "role": c.get("role", "未知"),
+                            "description": c.get("description", ""),
+                        })
+
+            # Fallback: extract character names from acts
+            if not blueprint["characters"]:
+                seen = set()
+                for act in pc.get("acts", []):
+                    for evt in act.get("key_events", []):
+                        evt_str = str(evt)
+                        names = re.findall(r'[「""\u2018\u2019\']([^「」""\u2018\u2019\']{1,8})[」""\u2018\u2019\']', evt_str)
+                        for n in names:
+                            n = n.strip()
+                            if n and n not in seen:
+                                seen.add(n)
+                                blueprint["characters"].append({
+                                    "name": n,
+                                    "role": "未知",
+                                    "description": "",
+                                })
 
         if world_result and world_result.content:
             ws = world_result.content.get("world_setting", {})

@@ -223,7 +223,7 @@ export default function Home() {
           id: `restored-${idx}`,
           agent_id: msg.data?.agent_id || 'system',
           agent_name: msg.data?.agent_name || '系统',
-          content: msg.data?.message || msg.data?.content || msg.data?.summary || JSON.stringify(msg.data || ''),
+          content: msg.data?.message || (typeof msg.data?.content === 'string' ? msg.data?.content : '') || msg.data?.summary || JSON.stringify(msg.data || ''),
           type: (msg.type || 'status') as Message['type'],
           round: msg.data?.round,
           timestamp: Date.now() - (sessionData.progress_messages.length - idx) * 100,

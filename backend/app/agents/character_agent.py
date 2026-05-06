@@ -143,6 +143,7 @@ class CharacterAgent(BaseAgent):
 
         if content is None:
             self.logger.warning("Character JSON extraction failed, using schema defaults")
+            self.logger.warning(f"Response preview: {response[:300]}")
             content = CharacterListOutput().model_dump()
             content["_parse_error"] = "LLM output could not be parsed"
 
