@@ -56,7 +56,8 @@ class DialogueAgent(BaseAgent):
     
     async def propose(self, task: str, context: Optional[Dict[str, Any]] = None) -> AgentProposal:
         self.logger.info(f"Proposing dialogue design for task: {task[:50]}...")
-        import re as _re
+        from app.agents.prompts import get_prompt
+import re as _re
 
         blueprint = (context or {}).get("blueprint")
 
@@ -199,7 +200,8 @@ class DialogueAgent(BaseAgent):
         messages = [{"role": "user", "content": prompt}]
         response = await self.call_llm(messages)
         
-        import re as _re
+        from app.agents.prompts import get_prompt
+import re as _re
         cleaned = _re.sub(r'<think>.*?</think>', '', response, flags=_re.DOTALL)
         try:
             content = self._extract_json(cleaned)
@@ -247,22 +249,13 @@ class DialogueAgent(BaseAgent):
         """
         self.logger.info("Revising dialogue design based on feedback...")
         
-        prompt = f"当前的对话设计方案：\n{json.dumps(current_proposal.content, ensure_ascii=False)}\n\n"
-        prompt += "收到的反馈：\n"
-        
+        current_json = json.dumps(current_proposal.content, ensure_ascii=False)
+        feedback_text = ""
         for fb in feedback:
-            prompt += f"- {fb.agent_id}: {fb.feedback}\n"
+            feedback_text += "- " + fb.agent_id + ": " + fb.feedback + "\n"
             if fb.suggestions:
-                prompt += f"  建议：{', '.join(fb.suggestions)}\n"
-        
-        prompt += """
-请根据反馈修改对话设计，保持JSON格式输出。
-重点关注：
-- 对话是否符合角色性格
-- 对话是否推动剧情
-- 对话是否有感染力
-"""
-        
+                feedback_text += "  建议：" + ", ".join(fb.suggestions) + "\n"
+        prompt = get_prompt("dialogue_agent", "revise", current_json=current_json, feedback_text=feedback_text)
         messages = [{"role": "user", "content": prompt}]
         response = await self.call_llm(messages)
         

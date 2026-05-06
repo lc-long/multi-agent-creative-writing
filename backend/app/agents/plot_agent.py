@@ -58,66 +58,12 @@ class PlotAgent(BaseAgent):
         
         import re as _re
         
+        from app.agents.prompts import get_prompt
         blueprint = (context or {}).get("blueprint")
-        
         if blueprint:
-            # Phase 3: 基于蓝图进行详细创作
-            chars_desc = "\n".join(
-                f"  - {c['name']}（{c.get('role','?')}）: {c.get('description','')}"
-                for c in blueprint.get("characters", [])
-            )
-            prompt = f"""请基于以下统一故事蓝图，进行详细的故事结构创作：
-
-【主题】
-{task}
-
-【故事蓝图】
-标题：{blueprint.get('title','')}
-类型：{blueprint.get('genre','')}
-简介：{blueprint.get('synopsis','')}
-核心冲突：{blueprint.get('core_conflict','')}
-主要角色：
-{chars_desc or '  待设计'}
-世界观概要：{blueprint.get('world_summary','')}
-
-请以JSON格式输出完整的故事结构，包含以下字段：
-{{
-    "title": "故事标题",
-    "genre": "故事类型",
-    "synopsis": "一句话简介（200字以内）",
-    "core_conflict": "核心冲突描述",
-    "acts": [
-        {{"name": "开篇", "description": "故事起始", "key_events": ["事件1", "事件2"]}},
-        {{"name": "发展", "description": "冲突升级", "key_events": ["事件1", "事件2"]}},
-        {{"name": "高潮", "description": "高潮对决", "key_events": ["事件1", "事件2"]}},
-        {{"name": "结局", "description": "收尾", "key_events": ["事件1", "事件2"]}}
-    ],
-    "themes": ["主题1", "主题2"]
-}}"""
+            prompt = get_prompt("plot_agent", "propose_creation", task=task, blueprint=blueprint)
         else:
-            # Phase 1: 脑暴模式——输出故事框架+角色需求
-            prompt = f"请为以下主题设计一个故事结构：\n\n{task}"
-            if context:
-                prompt += f"\n\n额外约束：{json.dumps(context, ensure_ascii=False)}"
-            prompt += """
-
-请以JSON格式输出故事结构，包含以下字段：
-{
-    "title": "故事标题",
-    "genre": "故事类型",
-    "synopsis": "一句话简介",
-    "core_conflict": "核心冲突描述",
-    "characters": [
-        {"name": "角色名", "role": "主角/反派/配角", "description": "角色简要描述"}
-    ],
-    "acts": [
-        {"name": "开篇", "description": "故事起始", "key_events": ["事件1", "事件2"]},
-        {"name": "发展", "description": "冲突升级", "key_events": ["事件1", "事件2"]},
-        {"name": "高潮", "description": "高潮对决", "key_events": ["事件1", "事件2"]},
-        {"name": "结局", "description": "收尾", "key_events": ["事件1", "事件2"]}
-    ],
-    "themes": ["主题1", "主题2"]
-}"""
+            prompt = get_prompt("plot_agent", "propose_brainstorm", task=task, context=context)
         
         messages = [{"role": "user", "content": prompt}]
         response = await self.call_llm(messages)
@@ -158,34 +104,19 @@ class PlotAgent(BaseAgent):
     ) -> AgentFeedback:
         self.logger.info("Reviewing other agents' proposals...")
         
-        prompt = "请从剧情角度review以下方案：\n\n"
-        
+        from app.agents.prompts import get_prompt
+        proposals_json = ""
         for agent_id, proposal in proposals.items():
             if agent_id != self.agent_id:
-                prompt += f"## {agent_id}的方案\n"
-                prompt += f"摘要：{proposal.summary}\n"
-                prompt += f"内容：{json.dumps(proposal.content, ensure_ascii=False)}\n\n"
-        
+                proposals_json += f"## {agent_id}的方案\n"
+                proposals_json += f"摘要：{proposal.summary}\n"
+                proposals_json += f"内容：{json.dumps(proposal.content, ensure_ascii=False)}\n\n"
+        discussion_json = ""
         if discussion:
-            prompt += "## 讨论记录\n"
+            discussion_json = "## 讨论记录\n"
             for msg in discussion[-3:]:
-                prompt += f"- {msg.agent_id}: {msg.content}\n"
-        
-        prompt += """
-请从剧情角度给出结构化反馈，以JSON格式输出：
-{
-    "feedback": "总体反馈内容",
-    "suggestions": ["建议1", "建议2"],
-    "agreement": true,
-    "issues": [
-        {
-            "target_agent": "存在问题的Agent ID",
-            "severity": "critical/major/minor",
-            "description": "问题描述",
-            "suggestion": "改进建议"
-        }
-    ]
-}"""
+                discussion_json += f"- {msg.agent_id}: {msg.content}\n"
+        prompt = get_prompt("plot_agent", "review", proposals_json=proposals_json, discussion_json=discussion_json)
         
         messages = [{"role": "user", "content": prompt}]
         response = await self.call_llm(messages)
@@ -244,18 +175,14 @@ class PlotAgent(BaseAgent):
         self.logger.info("Revising proposal based on feedback...")
         
         # 构建修改提示词
-        prompt = f"当前的故事结构方案：\n{json.dumps(current_proposal.content, ensure_ascii=False)}\n\n"
-        prompt += "收到的反馈：\n"
-        
+        from app.agents.prompts import get_prompt
+        current_json = json.dumps(current_proposal.content, ensure_ascii=False)
+        feedback_text = ""
         for fb in feedback:
-            prompt += f"- {fb.agent_id}: {fb.feedback}\n"
+            feedback_text += f"- {fb.agent_id}: {fb.feedback}\n"
             if fb.suggestions:
-                prompt += f"  建议：{', '.join(fb.suggestions)}\n"
-        
-        prompt += """
-请根据反馈修改故事结构，保持JSON格式输出。
-如果反馈合理，请做出相应调整；如果不合理，请保持原方案并说明理由。
-"""
+                feedback_text += f"  建议：{', '.join(fb.suggestions)}\n"
+        prompt = get_prompt("plot_agent", "revise", current_json=current_json, feedback_text=feedback_text)
         
         messages = [{"role": "user", "content": prompt}]
         response = await self.call_llm(messages)

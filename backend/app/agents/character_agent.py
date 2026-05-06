@@ -58,9 +58,9 @@ class CharacterAgent(BaseAgent):
         self.logger.info(f"Proposing character design for task: {task[:50]}...")
         import re as _re
 
+        from app.agents.prompts import get_prompt
         blueprint = (context or {}).get("blueprint")
-
-        if blueprint and blueprint.get("characters"):
+        if blueprint:
             chars_list = "\n".join(
                 f"  - {c['name']}（{c.get('role','?')}）: {c.get('description','')}"
                 for c in blueprint["characters"]
@@ -253,22 +253,13 @@ class CharacterAgent(BaseAgent):
         """
         self.logger.info("Revising character design based on feedback...")
         
-        prompt = f"当前的角色设计方案：\n{json.dumps(current_proposal.content, ensure_ascii=False)}\n\n"
-        prompt += "收到的反馈：\n"
-        
+        current_json = json.dumps(current_proposal.content, ensure_ascii=False)
+        feedback_text = ""
         for fb in feedback:
-            prompt += f"- {fb.agent_id}: {fb.feedback}\n"
+            feedback_text += "- " + fb.agent_id + ": " + fb.feedback + "\n"
             if fb.suggestions:
-                prompt += f"  建议：{', '.join(fb.suggestions)}\n"
-        
-        prompt += """
-请根据反馈修改角色设计，保持JSON格式输出。
-重点关注：
-- 角色是否符合故事需要
-- 角色关系是否合理
-- 角色成长弧线是否清晰
-"""
-        
+                feedback_text += "  建议：" + ", ".join(fb.suggestions) + "\n"
+        prompt = get_prompt("character_agent", "revise", current_json=current_json, feedback_text=feedback_text)
         messages = [{"role": "user", "content": prompt}]
         response = await self.call_llm(messages)
         
