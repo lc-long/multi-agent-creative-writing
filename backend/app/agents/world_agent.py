@@ -110,7 +110,13 @@ class WorldBuildingAgent(BaseAgent):
 
         from app.agents.schemas import WorldOutput
 
-        cleaned = _re.sub(r'<think>.*?(?:</think>|$)', '', response, flags=_re.DOTALL)
+        # 去除闭合的<think>块
+        cleaned = _re.sub(r'<think>.*?</think>', '', response, flags=_re.DOTALL)
+        # 如果仍有未闭合的<think>块，找到第一个 { 开始的位置
+        if '<think>' in cleaned:
+            first_brace = cleaned.find('{')
+            if first_brace >= 0:
+                cleaned = cleaned[first_brace:]
         content = None
 
         for attempt in [cleaned, _re.search(r'\{[\s\S]*\}', cleaned).group(0) if _re.search(r'\{[\s\S]*\}', cleaned) else None]:
@@ -188,7 +194,13 @@ class WorldBuildingAgent(BaseAgent):
         
         from app.agents.prompts import get_prompt
         import re as _re
-        cleaned = _re.sub(r'<think>.*?(?:</think>|$)', '', response, flags=_re.DOTALL)
+        # 去除闭合的<think>块
+        cleaned = _re.sub(r'<think>.*?</think>', '', response, flags=_re.DOTALL)
+        # 如果仍有未闭合的<think>块，找到第一个 { 开始的位置
+        if '<think>' in cleaned:
+            first_brace = cleaned.find('{')
+            if first_brace >= 0:
+                cleaned = cleaned[first_brace:]
         try:
             content = self._extract_json(cleaned)
         except Exception:
@@ -264,7 +276,14 @@ class WorldBuildingAgent(BaseAgent):
     def _extract_json(self, text: str) -> Dict[str, Any]:
         """从文本中提取JSON"""
         import re
-        text = re.sub(r'<think>.*?(?:</think>|$)', '', text, flags=re.DOTALL)
+        text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL)
+        
+        # 如果仍有未闭合的<think>块，找到第一个 { 开始的位置
+        if '<think>' in text:
+            first_brace = text.find('{')
+            if first_brace >= 0:
+                text = text[first_brace:]
+        
         try:
             return json.loads(text)
         except json.JSONDecodeError:

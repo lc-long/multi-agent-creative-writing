@@ -127,8 +127,14 @@ class BaseAgent(ABC):
         import re
         raw = text
 
-        # 去除 <think>...</think> 块
+        # 去除 <think>...</think> 块（仅限闭合的）
         raw = re.sub(r'<think>.*?</think>', '', raw, flags=re.DOTALL)
+
+        # 如果仍有未闭合的<think>块，找到第一个 { 开始的位置
+        if '<think>' in raw:
+            first_brace = raw.find('{')
+            if first_brace >= 0:
+                raw = raw[first_brace:]
 
         # 尝试直接解析
         try:

@@ -70,7 +70,13 @@ class PlotAgent(BaseAgent):
 
         from app.agents.schemas import PlotOutput
 
-        cleaned = _re.sub(r'<think>.*?(?:</think>|$)', '', response, flags=_re.DOTALL)
+        # 去除闭合的<think>块
+        cleaned = _re.sub(r'<think>.*?</think>', '', response, flags=_re.DOTALL)
+        # 如果仍有未闭合的<think>块，找到第一个 { 开始的位置
+        if '<think>' in cleaned:
+            first_brace = cleaned.find('{')
+            if first_brace >= 0:
+                cleaned = cleaned[first_brace:]
         content = None
 
         # 尝试解析 JSON → 用 schema 校验 → 失败就走默认值
@@ -122,7 +128,13 @@ class PlotAgent(BaseAgent):
         response = await self.call_llm(messages)
         
         import re as _re
-        cleaned = _re.sub(r'<think>.*?(?:</think>|$)', '', response, flags=_re.DOTALL)
+        # 去除闭合的<think>块
+        cleaned = _re.sub(r'<think>.*?</think>', '', response, flags=_re.DOTALL)
+        # 如果仍有未闭合的<think>块，找到第一个 { 开始的位置
+        if '<think>' in cleaned:
+            first_brace = cleaned.find('{')
+            if first_brace >= 0:
+                cleaned = cleaned[first_brace:]
         try:
             content = self._extract_json(cleaned)
         except Exception:
@@ -203,7 +215,13 @@ class PlotAgent(BaseAgent):
         """从文本中提取JSON"""
         import re
         # 去除 <think>...</think> 块
-        text = re.sub(r'<think>.*?(?:</think>|$)', '', text, flags=re.DOTALL)
+        text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL)
+        
+        # 如果仍有未闭合的<think>块，找到第一个 { 开始的位置
+        if '<think>' in text:
+            first_brace = text.find('{')
+            if first_brace >= 0:
+                text = text[first_brace:]
         
         # 尝试直接解析
         try:
